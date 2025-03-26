@@ -119,10 +119,8 @@ std::string CodeGenTileLangCUDA::Finish() {
     decl_stream << "#include <math_constants.h>\n";
   }
 
-  if (need_cooperative_groups_) {
-    decl_stream << "#include <cooperative_groups.h>\n";
-  }
-
+  decl_stream << "#include <nvshmem.h>\n";
+  decl_stream << "#include <nvshmemx.h>\n";
   decl_stream << "#include <tl_templates/cuda/gemm.h>\n";
   if (enable_sparse_gemm_) {
     decl_stream << "#include <tl_templates/cuda/gemm_sp.h>\n";

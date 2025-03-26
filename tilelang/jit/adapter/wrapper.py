@@ -9,20 +9,15 @@ import re
 import logging
 import textwrap
 
-PREDEF_ATTRIBUTE_SET_DYNAMIC_MEMORY = """
-    cudaError_t result_{0} = cudaFuncSetAttribute({0}, cudaFuncAttributeMaxDynamicSharedMemorySize, {1});
-    if (result_{0} != CUDA_SUCCESS) {{
-        snprintf(error_buf, ERROR_BUF_SIZE, "Failed to set the allowed dynamic shared memory size to %d with error: %s", {1}, cudaGetErrorString(result_{0}));
-        return -1;
-    }}
+INIT_NVSHMEM = """
+    int mype_node;
+	nvshmem_init();
+	mype_node = nvshmem_team_my_pe(NVSHMEMX_TEAM_NODE);
+	cudaSetDevice(mype_node);
 """
 
-PREDEF_ATTRIBUTE_SET_DYNAMIC_MEMORY_HIP = """
-    if ({1} > 65536) {{
-        snprintf(error_buf, ERROR_BUF_SIZE, "Failed to set the allowed dynamic shared memory size for {0} to %d", {1});
-        return -1;
-    }}
-    return 0;
+PREDEF_ARRTIBUTE_SET_DYNAMIC_MEMORY = """
+    cudaFuncSetAttribute({}, cudaFuncAttributeMaxDynamicSharedMemorySize, {});
 """
 
 PREDEF_INIT_FUNC = """
@@ -217,7 +212,7 @@ class TLCUDASourceWrapper(object):
         self.block_info: Union[List[int], Dict] = [1, 1, 1]
         self.grid_info: Union[List[int], Dict] = [1, 1, 1]
         self.tma_descriptor_args: Optional[Dict] = None
-        self.l2_persistent_map: Optional[Dict[str, Dict]] = {}
+        self.use_nvshmem = True
         self.parse_source_information()
         self.srcpath: Optional[str] = None
         self.libpath: Optional[str] = None
@@ -287,9 +282,15 @@ class TLCUDASourceWrapper(object):
                 has_l2_persistent_map = True
                 break
 
-        kernel_launch_code = """"""
-        if has_l2_persistent_map:
-            kernel_launch_code += L2_PERSISTENT_MAP_CREATE_HANDLE
+        # TODO: Pass ptr created by nvshmem_malloc and stream to kernel
+        _call_str = """"""
+        _call_str += "\tcudaStream_t stream_;\n"
+        if self.use_nvshmem:
+            _call_str += "\tint mype_node;\n"
+            _call_str += "\tnvshmem_init();\n"
+            _call_str += "\tmype_node = nvshmem_team_my_pe(NVSHMEMX_TEAM_NODE);\n"
+            _call_str += "\tcudaSetDevice(mype_node);\n"
+        _call_str += "\tcudaStreamCreate(&stream_);\n"
         desc_name_map: Dict[str, str] = {}
         for function_name, function_info in function_informations.items():
             block_info = function_info["block_info"]
@@ -314,27 +315,17 @@ class TLCUDASourceWrapper(object):
                 self._pythonic_expr(grid_info[0]), self._pythonic_expr(grid_info[1]),
                 self._pythonic_expr(grid_info[2]))
             smem_str = 0 if dynamic_smem_buf is None else dynamic_smem_buf
-            init_l2_persistent_map = self.generate_l2_persistent_map(function_name)
-            kernel_launch_code += init_l2_persistent_map
+            _call_str += "\t{}<<<{}, {}, {}, stream_>>>({});\n".format(function_name, grid_str,
+                                                                      block_str, smem_str,
+                                                                      call_args)
+            if self.use_nvshmem:
+                _call_str += "\tnvshmemx_barrier_all_on_stream(stream_);\n"
 
-            if self.use_cooperative_groups[function_name]:
-                args_list = func_call_args(declaration, function_args, desc_name_map)
-                args_array = [f"(void*)&{arg}" for arg in args_list]
-                call_args = f"\tvoid* {function_name}_args[] = {{{', '.join(args_array)}}};\n"
-                kernel_launch_code += call_args
-                # Using cudaLaunchCooperativeKernel to launch the kernel
-                kernel_launch_code += "\tTILELANG_CHECK(cudaLaunchCooperativeKernel((void*){}, {}, {}, {}, {}, stream));\n".format(
-                    function_name, grid_str, block_str, function_name + "_args", smem_str)
-            else:
-                call_args = ", ".join(func_call_args(declaration, function_args, desc_name_map))
-                kernel_launch_code += "\t{}<<<{}, {}, {}, stream>>>({});\n".format(
-                    function_name, grid_str, block_str, smem_str, call_args)
-                kernel_launch_code += "\tTILELANG_CHECK_LAST_ERROR(\"{}\");\n".format(function_name)
-            if has_l2_persistent_map:
-                kernel_launch_code += L2_PERSISTENT_MAP_RESET_HANDLE
-
-        init_tma_descriptor_args = self.generate_tma_descriptor_args(desc_name_map)
-        kernel_launch_code = init_tma_descriptor_args + kernel_launch_code
+        _call_str = self.generate_tma_descriptor_args(desc_name_map) + _call_str
+        _call_str += "\tcudaStreamSynchronize(stream_);\n"
+        if self.use_nvshmem:
+            _call_str += "\tnvshmem_finalize();\n"
+        _call_str += "\tcudaStreamDestroy(stream_);\n"
 
         # Wrap the kernel dispatch logic in an external C function
         host_func = PREDEF_HOST_FUNC.format(def_args, kernel_launch_code)
@@ -492,6 +483,8 @@ class TLCUDASourceWrapper(object):
         call_str = """"""
         # If dynamic shared memory buffer is specified, prepare the cudaFuncSetAttribute call
         for function_name, dynamic_smem_buf in self.dynamic_smem_buf.items():
+            if self.use_nvshmem:
+                call_str += INIT_NVSHMEM
             if dynamic_smem_buf is not None:
                 # Format the cudaFuncSetAttribute call for dynamic shared memory
                 call_str += PREDEF_ATTRIBUTE_SET_DYNAMIC_MEMORY.format(
