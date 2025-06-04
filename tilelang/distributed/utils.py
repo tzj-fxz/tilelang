@@ -3,6 +3,7 @@ import pynvshmem
 import datetime
 import os
 from typing import List, Union, Tuple, Callable, Sequence
+from contextlib import contextmanager
 
 dtype_map = {
     "float16": torch.float16,
