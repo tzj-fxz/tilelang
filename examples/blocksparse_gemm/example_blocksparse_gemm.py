@@ -110,7 +110,8 @@ def get_best_config(M, N, K):
         kernel=kernel, configs=get_configs(M, N, K)
     ).set_compile_args(
         out_idx=[-1],  # Index of the output tensor
-
+        target="auto",  # Automatically detect target
+    ).set_profile_args(
         # supply_type should not set here because we provide a custom supply
         # function `supply_prog` and `supply_type` will be ignored.
 
@@ -136,12 +137,12 @@ def get_best_config(M, N, K):
         # different configurations. Reusing cached tensors from a previous
         # configuration would lead to shape mismatches.
         cache_input_tensors=False,
-        target="auto",  # Automatically detect target
     )
     # Run the tuning process
     return autotuner.run(warmup=3, rep=20)
 
 
+@tilelang.jit(out_idx=[-1])
 def blocksparse_matmul(M,
                        N,
                        K,
@@ -211,10 +212,9 @@ def main():
         print(f"Best Kernel Latency: {best_latency:.6f} ms")
         print(f"Reference Latency: {ref_latency:.6f} ms")
     else:
-        func = blocksparse_matmul(M, N, K, DEFAULT_BLOCK_M, DEFAULT_BLOCK_N, DEFAULT_BLOCK_K,
-                                  DEFAULT_NUM_STAGES, DEFAULT_THREAD_NUM,
-                                  DEFAULT_ENABLE_RASTERIZATION)
-        kernel = tilelang.compile(func, out_idx=-1)
+        kernel = blocksparse_matmul(M, N, K, DEFAULT_BLOCK_M, DEFAULT_BLOCK_N, DEFAULT_BLOCK_K,
+                                    DEFAULT_NUM_STAGES, DEFAULT_THREAD_NUM,
+                                    DEFAULT_ENABLE_RASTERIZATION)
         block_M, block_N, block_K = DEFAULT_BLOCK_M, DEFAULT_BLOCK_N, DEFAULT_BLOCK_K
         print(f"Using default kernel with block size ({block_M}, {block_N}, {block_K})")
 

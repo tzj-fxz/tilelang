@@ -90,6 +90,7 @@ class CtypesKernelAdapter(BaseKernelAdapter):
         self.verbose = verbose
         self.wrapper = TLWrapper(self.target)
         self.lib_generator = LibraryGenerator(self.target)
+        self.lib_generator.assign_pass_configs(pass_configs)
 
         self.wrapper.assign_optimized_module(self.ir_module)
         self.wrapper.assign_pass_configs(pass_configs)
@@ -145,6 +146,7 @@ class CtypesKernelAdapter(BaseKernelAdapter):
         adapter.target = Target.canon_target(determine_target(target))
         adapter.verbose = verbose
         adapter.lib_generator = LibraryGenerator(adapter.target)
+        adapter.lib_generator.assign_pass_configs(pass_configs)
         adapter.lib = adapter.lib_generator.load_lib(lib_path=kernel_lib_path)
         adapter.lib.init()
 
@@ -179,7 +181,7 @@ class CtypesKernelAdapter(BaseKernelAdapter):
         ctypes_args.append(ctypes.c_void_p(stream))
         self.lib.call(*ctypes_args)
 
-    def _warp_forward_from_prebuild_lib(self,
+    def _wrap_forward_from_prebuild_lib(self,
                                         *ins: List[torch.Tensor],
                                         stream: Optional[int] = None):
         """High-level wrapper for kernel execution.
@@ -243,7 +245,7 @@ class CtypesKernelAdapter(BaseKernelAdapter):
 
     def _convert_torch_func(self) -> Callable:
         """Returns a PyTorch-compatible function wrapper for the kernel."""
-        return self._warp_forward_from_prebuild_lib
+        return self._wrap_forward_from_prebuild_lib
 
     @property
     def prim_func(self) -> tir.PrimFunc:

@@ -5,10 +5,11 @@ import tilelang
 import tilelang.language as T
 
 
+@tilelang.jit(out_idx=[-1])
 def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="float"):
 
     @T.prim_func
-    def main(
+    def gemm(
             A: T.Tensor((M, K), dtype),
             B: T.Tensor((K, N), dtype),
             C: T.Tensor((M, N), dtype),
@@ -26,32 +27,33 @@ def matmul(M, N, K, block_M, block_N, block_K, dtype="float16", accum_dtype="flo
 
             T.copy(C_local, C[by * block_M, bx * block_N])
 
-    return main
+    return gemm
 
 
-func = matmul(1024, 1024, 1024, 128, 128, 32)
+def main():
+    kernel = matmul(1024, 1024, 1024, 128, 128, 32)
 
-print(func)
+    import torch
 
-kernel = tilelang.compile(func, out_idx=-1)
+    a = torch.randn(1024, 1024).cuda().half()
+    b = torch.randn(1024, 1024).cuda().half()
 
-import torch
+    c = kernel(a, b)
 
-a = torch.randn(1024, 1024).cuda().half()
-b = torch.randn(1024, 1024).cuda().half()
+    ref_c = a @ b
 
-c = kernel(a, b)
+    print("c:")
+    print(c)
+    print("ref_c:")
+    print(ref_c)
 
-ref_c = a @ b
+    torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
+    print("All check passed.")
 
-print("c:")
-print(c)
-print("ref_c:")
-print(ref_c)
+    # Get CUDA Source
+    print("CUDA Source:")
+    print(kernel.get_kernel_source())
 
-torch.testing.assert_close(c, ref_c, rtol=1e-2, atol=1e-2)
-print("All check passed.")
 
-# Get CUDA Source
-print("CUDA Source:")
-print(kernel.get_kernel_source())
+if __name__ == "__main__":
+    main()

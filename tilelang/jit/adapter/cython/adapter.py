@@ -246,6 +246,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
         self.verbose = verbose
         self.wrapper = TLWrapper(self.target)
         self.lib_generator = LibraryGenerator(self.target)
+        self.lib_generator.assign_pass_configs(pass_configs)
 
         self.wrapper.assign_optimized_module(self.ir_module)
         self.wrapper.assign_pass_configs(pass_configs)
@@ -305,6 +306,7 @@ class CythonKernelAdapter(BaseKernelAdapter):
 
         adapter.verbose = verbose
         adapter.lib_generator = LibraryGenerator(adapter.target)
+        adapter.lib_generator.assign_pass_configs(pass_configs)
         adapter.lib = adapter.lib_generator.load_lib(lib_path=kernel_lib_path)
 
         adapter.lib.get_last_error.restype = ctypes.c_char_p
@@ -432,8 +434,17 @@ class CythonKernelAdapter(BaseKernelAdapter):
     def _convert_torch_func(self) -> Callable:
         """Returns a PyTorch-compatible function wrapper for the kernel."""
 
-        def lambda_forward(*args, stream: int = -1):
-            return self.cython_wrapper.forward([*args], stream=stream)
+        def lambda_forward(*args, stream: int = -1, skip_tensor_validation: bool = False):
+            """
+            Args:
+                args: List of input tensors
+                stream: CUDA stream ID, default to -1, will use the current stream if not specified
+                skip_tensor_validation: Whether to skip tensor attributes validation which
+                includes shape, dtype, device, etc.
+            """
+            return self.cython_wrapper.forward([*args],
+                                               stream=stream,
+                                               skip_tensor_validation=skip_tensor_validation)
 
         return lambda_forward
 

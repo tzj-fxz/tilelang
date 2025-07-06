@@ -3,15 +3,22 @@
 # ruff: noqa
 import torch
 from typing import Optional, Union
+from packaging.version import parse
+
 import tilelang
 from tilelang import language as T
 import tilelang.testing
 
-from fla.ops.common.utils import prepare_token_indices
+import fla
+if parse(fla.__version__) < parse("0.2.1"):
+    from fla.ops.common.utils import prepare_token_indices
+else:
+    from fla.ops.utils import prepare_token_indices
 from reference import naive_nsa
 from einops import rearrange
 
 
+@tilelang.jit
 def native_sparse_attention_varlen(batch,
                                    heads,
                                    c_seq_len,
@@ -167,7 +174,7 @@ def parallel_nsa_fwd(
     BS = block_size
     WS = window_size
 
-    program = native_sparse_attention_varlen(
+    kernel = native_sparse_attention_varlen(
         batch=batch,
         heads=HQ,
         c_seq_len=C_SEQ_LEN,
@@ -177,8 +184,6 @@ def parallel_nsa_fwd(
         groups=G,
         selected_blocks=S,
     )
-
-    kernel = tilelang.compile(program)
 
     o_slc = torch.empty(B, C_SEQ_LEN, HQ, V, dtype=v.dtype, device=q.device)
     kernel(

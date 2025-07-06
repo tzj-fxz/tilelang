@@ -142,16 +142,6 @@ public:
     }
     warpgroup_fence_operand(acc);
     warpgroup_fence_operand(tCrA);
-
-    // warpgroup_fence_operand(acc);
-    // warpgroup_arrive();
-
-    // gemm(tiled_mma, tCrA(_, _, _), tCrB(_, _, _), acc);
-
-    // warpgroup_commit_batch();
-
-    // if constexpr (wg_wait >= 0) { warpgroup_wait<wg_wait>(); }
-    // warpgroup_fence_operand(acc);
   }
 };
 
@@ -363,6 +353,7 @@ public:
       typename std::conditional<std::is_same<B_type_raw, float>::value,
                                 tfloat32_t, A_type_raw>::type;
   using C_type = C_type_raw;
+
   using Instruction =
       DispatchInstruction<A_type, B_type, C_type, num_warp_m, num_warp_n, N>;
 
@@ -424,7 +415,7 @@ public:
     auto tCrA_view = make_tensor(tCrA.data(), remove_swizzle(tCrA.layout()));
     auto tCrB_view = make_tensor(tCrB.data(), remove_swizzle(tCrB.layout()));
     if constexpr (clear_accum) {
-      tiled_mma.accumulate_ = GMMA::ScaleOut::Zero;
+      clear(acc);
     }
     CUTE_UNROLL
     for (int k = 0; k < size<2>(tCrA); ++k) {
@@ -455,10 +446,9 @@ public:
     Tensor tCrA =
         make_tensor(make_rmem_ptr(reinterpret_cast<A_type *>(pA)),
                     partition_shape_A(tiled_mma, Shape<Int<M>, Int<K>>{}));
-
     auto tCrB_view = make_tensor(tCrB.data(), remove_swizzle(tCrB.layout()));
     if constexpr (clear_accum) {
-      tiled_mma.accumulate_ = GMMA::ScaleOut::Zero;
+      clear(acc);
     }
     copy(tiled_copy_B, tCsB(_, _, 0), tCrB_copy_view(_, _, 0));
     CUTE_UNROLL
@@ -491,10 +481,9 @@ public:
     Tensor tCrB =
         make_tensor(make_rmem_ptr(reinterpret_cast<B_type *>(pB)),
                     partition_shape_B(tiled_mma, Shape<Int<N>, Int<K>>{}));
-
     auto tCrA_view = make_tensor(tCrA.data(), remove_swizzle(tCrA.layout()));
     if constexpr (clear_accum) {
-      tiled_mma.accumulate_ = GMMA::ScaleOut::Zero;
+      clear(acc);
     }
     copy(tiled_copy_A, tCsA(_, _, 0), tCrA_copy_view(_, _, 0));
     CUTE_UNROLL

@@ -335,7 +335,7 @@ def EliminateStorageSyncForMBarrier():
     return _ffi_api.EliminateStorageSyncForMBarrier()  # type: ignore
 
 
-def MergeSharedMemoryAllocations():
+def MergeSharedMemoryAllocations(enable_aggressive_merge: bool = False):
     """MergeSharedMemoryAllocations
 
     Returns
@@ -343,4 +343,30 @@ def MergeSharedMemoryAllocations():
     fpass : tvm.transform.Pass
         The result pass
     """
-    return _ffi_api.MergeSharedMemoryAllocations()  # type: ignore
+    return _ffi_api.MergeSharedMemoryAllocations(enable_aggressive_merge)  # type: ignore
+
+
+def LowerL2Persistent():
+    """LowerL2Persistent
+    """
+    return _ffi_api.LowerL2Persistent()  # type: ignore
+
+
+def PersistThreadblock():
+    """PersistThreadblock
+    """
+    return _ffi_api.PersistThreadblock()  # type: ignore
+
+
+def AlignDynamicSharedMemoryAllocations(align_bytes: int = 16):
+    """AlignDynamicSharedMemoryAllocations
+
+    Parameters
+    ----------
+    align_bytes: int
+        The alignment bytes.
+
+    Returns
+    -------
+    """
+    return _ffi_api.AlignDynamicSharedMemoryAllocations(align_bytes)  # type: ignore

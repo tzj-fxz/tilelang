@@ -110,6 +110,12 @@ Stmt Copy::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer) const {
   Array<Range> global_range = is_load ? src_range : dst_range;
   Array<Range> shared_range = is_load ? dst_range : src_range;
 
+  if (T.layout_map.count(global_tensor)) {
+    LOG(WARNING) << "TMA bulk copy cannot support a non-swizzled global "
+                    "layout, fallback to normal copy.";
+    return Stmt();
+  }
+
   Array<PrimExpr> indices;
   for (auto r : shared_range)
     indices.push_back(r->min);
@@ -134,10 +140,6 @@ Stmt Copy::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer) const {
   if (T.layout_map.count(shared_tensor)) {
     shared_layout = T.layout_map[shared_tensor];
     shared_tensor = T.buffer_remap[shared_tensor];
-  }
-  if (T.layout_map.count(global_tensor)) {
-    ICHECK(T.layout_map.count(global_tensor) == 0)
-        << "Cannot support global layout.";
   }
 
   TMADesc desc;
@@ -173,12 +175,29 @@ Stmt Copy::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer) const {
   // The first stride element should be 1
   ICHECK(is_one(desc.global_stride[0])) << desc.global_stride;
   // Make global stride in bytes
-  desc.global_stride = desc.global_stride.Map(
-      [&](PrimExpr e) { return e * global_tensor->dtype.bytes(); });
+  desc.global_stride = desc.global_stride.Map([&](PrimExpr e) {
+    return cast(DataType::Int(64), e) * global_tensor->dtype.bytes();
+  });
 
   // Smem Box
+  // check smem range and global range is legal
+  auto s_range_idx = 0;
+  for (size_t i = 0; i < global_range.size(); i++) {
+    auto g_range = global_range[i];
+    if (is_one(g_range->extent)) {
+      continue;
+    }
+    auto s_range = shared_range[s_range_idx++];
+    ICHECK(StructuralEqual()(g_range->extent, s_range->extent))
+        << global_tensor->name << "[" << i << "] is illegal, "
+        << global_tensor->name << "[" << i << "] = " << g_range->extent << ", "
+        << shared_tensor->name << "[" << s_range_idx
+        << "] = " << s_range->extent;
+  }
+
   desc.smem_box =
       ReverseArray(global_range.Map([](Range r) { return r->extent; }));
+
   desc.smem_stride = Array<PrimExpr>(desc.rank, PrimExpr(1));
 
   // L2 & OOB
@@ -198,6 +217,11 @@ Stmt Copy::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer) const {
                                              *stride, *continuous,
                                              shared_tensor->dtype.bits()))) {
       desc.swizzle = static_cast<int>(CU_TENSOR_MAP_SWIZZLE_NONE);
+    } else if (StructuralEqual()(
+                   shared_layout,
+                   makeQuarterBankSwizzleLayout(*stride, *continuous,
+                                                shared_tensor->dtype.bits()))) {
+      desc.swizzle = static_cast<int>(CU_TENSOR_MAP_SWIZZLE_32B);
     } else if (StructuralEqual()(
                    shared_layout,
                    makeHalfBankSwizzleLayout(*stride, *continuous,
@@ -245,6 +269,7 @@ Stmt Copy::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer) const {
   PrimExpr total_elements = 1;
   for (auto e : desc.smem_box)
     total_elements *= e;
+
   if ((*inner_box_dim) != instruction_dim) {
     Var loop_var("i");
     int loop_extent = (*inner_box_dim) / instruction_dim;
@@ -325,6 +350,7 @@ Stmt Conv2DIm2ColOp::Lower(const LowerArgs &T,
   desc.data_type = to_CUtensorMapDataType(src->dtype);
   desc.global_addr = src->data;
   desc.global_shape = ReverseArray(src->shape);
+
   if (!src->strides.empty()) {
     desc.global_stride = ReverseArray(src->strides);
   } else {
@@ -339,8 +365,9 @@ Stmt Conv2DIm2ColOp::Lower(const LowerArgs &T,
   // The first stride element should be 1
   ICHECK(is_one(desc.global_stride[0])) << desc.global_stride;
   // Make global stride in bytes
-  desc.global_stride = desc.global_stride.Map(
-      [&](PrimExpr e) { return e * src->dtype.bytes(); });
+  desc.global_stride = desc.global_stride.Map([&](PrimExpr e) {
+    return cast(DataType::Int(64), e) * src->dtype.bytes();
+  });
   desc.elem_stride = {1, stride, stride, 1};
   desc.lower_corner = {-padding, -padding};
   desc.upper_corner = {-padding, -padding};
@@ -356,8 +383,13 @@ Stmt Conv2DIm2ColOp::Lower(const LowerArgs &T,
     auto stride = as_const_int(shared_layout->InputShape()[0]);
     auto continuous = as_const_int(shared_layout->InputShape()[1]);
     ICHECK(stride != nullptr && continuous != nullptr);
+
     if (StructuralEqual()(shared_layout,
-                          makeHalfBankSwizzleLayout(*stride, *continuous,
+                          makeQuarterBankSwizzleLayout(*stride, *continuous,
+                                                       dst->dtype.bits()))) {
+      desc.swizzle = static_cast<int>(CU_TENSOR_MAP_SWIZZLE_32B);
+    } else if (StructuralEqual()(shared_layout, makeHalfBankSwizzleLayout(
+                                                    *stride, *continuous,
                                                     dst->dtype.bits()))) {
       desc.swizzle = static_cast<int>(CU_TENSOR_MAP_SWIZZLE_64B);
     } else if (StructuralEqual()(shared_layout, makeFullBankSwizzleLayout(

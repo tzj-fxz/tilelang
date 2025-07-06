@@ -213,6 +213,7 @@ public:
       typename std::conditional<std::is_same<B_type_raw, float>::value,
                                 tfloat32_t, A_type_raw>::type;
   using C_type = C_type_raw;
+
   using Instruction =
       DispatchInstruction<A_type, B_type, C_type, num_warp_m, num_warp_n, N>;
 
@@ -306,7 +307,6 @@ public:
     Tensor tCrA =
         make_tensor(make_rmem_ptr(reinterpret_cast<A_type *>(pA)),
                     partition_shape_A(tiled_mma, Shape<Int<M>, Int<K>>{}));
-
     if constexpr (clear_accum) {
       clear(acc);
     }
@@ -342,7 +342,6 @@ public:
     Tensor tCrB =
         make_tensor(make_rmem_ptr(reinterpret_cast<B_type *>(pB)),
                     partition_shape_B(tiled_mma, Shape<Int<N>, Int<K>>{}));
-
     if constexpr (clear_accum) {
       clear(acc);
     }
