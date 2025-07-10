@@ -1,5 +1,5 @@
 import torch
-from triton_dist import pynvshmem  # TODO: remove this
+import pynvshmem
 
 
 DTYPE_MAP = {
