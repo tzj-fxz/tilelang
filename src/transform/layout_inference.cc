@@ -156,13 +156,12 @@ public:
             }
           }
           // If already in map, ensure they are structurally equal
-          if (level == InferLevel::kStrict ||
-              (level != InferLevel::kStrict &&
-               !strict_layout_map.count(buffer))) {
-            // (zhengju) We can not modify the strict layout map when current
-            // level is not strict This check should be done in certain
-            // conditions, since the strict layout map is not updated in the
-            // above code when current level is not strict
+          if (level == InferLevel::kStrict || !strict_layout_map.count(buffer)) {
+            // When the inference level is not kStrict, we must not modify layouts that
+            // were already determined at the kStrict level. The strict_layout_map
+            // contains these layouts. Therefore, we only perform the structural equality
+            // check if the current level is kStrict, or if the buffer does not have a
+            // pre-existing strict layout.
             ICHECK(StructuralEqual()(layout, layout_map[buffer]))
                 << "Get different layout for " << buffer
                 << "\n current layout: " << layout->DebugOutput()
