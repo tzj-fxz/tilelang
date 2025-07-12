@@ -275,6 +275,7 @@ LayoutMap ParallelOp::InferLayout(const LayoutInferArgs &T, InferLevel level) {
           << "\nLHS = " << lhs << "\nRHS = " << rhs;
     }
   }
+
   // Step 3: Infer other fragment's layout from the loop's partition
   LayoutMap results;
   for (const auto &[buffer, _] : indice_map_) {
