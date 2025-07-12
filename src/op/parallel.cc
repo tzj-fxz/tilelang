@@ -295,10 +295,11 @@ LayoutMap ParallelOp::InferLayout(const LayoutInferArgs &T, InferLevel level) {
             CompleteBufferFragment(buffer)->BindThreadRange(T.thread_bounds);
         const FragmentNode *dst_layout =
             dst_layout_fragment.as<Fragment>().get();
-        // Do not modify a strict layout, even if it conflicts with the destination
-        // layout. This check is handled more appropriately in layout_inference.cc,
-        // which controls the final layout map. A conflict here is unlikely to
-        // affect the result, as strict layouts typically have a replication factor of 1.
+        // Do not modify a strict layout, even if it conflicts with the
+        // destination layout. This check is handled more appropriately in
+        // layout_inference.cc, which controls the final layout map. A conflict
+        // here is unlikely to affect the result, as strict layouts typically
+        // have a replication factor of 1.
         if (as_const_int(dst_layout->ReplicateExtent()) &&
             as_const_int(src_layout->ReplicateExtent()) &&
             (*as_const_int(dst_layout->ReplicateExtent()) >
