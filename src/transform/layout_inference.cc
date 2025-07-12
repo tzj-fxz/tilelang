@@ -224,12 +224,6 @@ public:
     // step 2: infer common layout with BFS
     finish_infer_queue();
 
-    // LOG(INFO) << "infer common layout: layout_map: " << layout_map;
-    // for (const auto &[buffer, layout] : layout_map) {
-    //   LOG(INFO) << "\tbuffer: " << buffer << " layout: " <<
-    //   layout->DebugOutput();
-    // }
-
     // step 3: relax constraints to free and re-run
     for (int i = 0; i < num_infer; i++) {
       run_infer_step(i, InferLevel::kFree, true);
