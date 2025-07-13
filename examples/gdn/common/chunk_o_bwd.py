@@ -240,9 +240,6 @@ def tilelang_chunk_o_bwd_dqkwg(
                 #     # FIXME: This statement will cause an error of layout inference, which is probably fixed in the latest version of tilelang
                 #     dg_fragment[i_s] = dg_fragment[i_s] + dq_fragment[i_s, i_k] * q_shared[i_s, i_k]
 
-                # T.print(dq_fragment, msg="after dq")
-                # T.print(dg_fragment, msg="after dq")
-
                 for i_s, i_k in T.Parallel(block_S, block_DK):
                     with T.If(G_last_local[0] - G_shared[i_s, i_k] <= 0):
                         with T.Then():
@@ -266,9 +263,6 @@ def tilelang_chunk_o_bwd_dqkwg(
                     i_s, i_k = i_sk // block_DK, i_sk % block_DK
                     dg_last_local[0] = dg_last_local[0] + dk_fragment[i_s, i_k] * k_shared[i_s, i_k]
 
-                # T.print(dk_fragment, msg="after dk")
-                # T.print(dg_fragment, msg="after dk")
-
                 for i_s1, i_s2 in T.Parallel(block_S, block_S):
                     with T.If(i_s1 >= i_s2 and G_shared[i_s1, 0] - G_shared[i_s2, 0] <= 0):
                         with T.Then():
@@ -284,24 +278,13 @@ def tilelang_chunk_o_bwd_dqkwg(
                 # FIXME: The reduce_sum statement with clear=True will cause an error of warp specialized pass
                 T.reduce_sum(ds_fragment_positive, dg_fragment, dim=1, clear=False)
                 T.copy(dg_fragment, dg_shared)
-                # T.print(ds_fragment_positive, msg="after ds_positive")
-                # T.print(dg_fragment, msg="after ds_positive")
                 for i_s1, i_s2 in T.Parallel(block_S, block_S):
                     ds_fragment_negative[i_s1, i_s2] = -ds_fragment_positive[i_s1, i_s2]
                 # FIXME: The reduce_sum statement with clear=True will cause an error of warp specialized pass
                 T.reduce_sum(ds_fragment_negative, dg_fragment_2, dim=0, clear=False)
                 T.copy(dg_fragment_2, dg_shared_2)
-                # T.print(ds_fragment_negative, msg="after ds_negative")
-                # T.print(dg_fragment_2, msg="after ds_negative")
                 for i_s in T.Parallel(block_S):
                     dg_fragment_final[i_s] = dg_shared[i_s] + dg_shared_2[i_s]
-                # T.print(dg_fragment_final, msg="after ds")
-                
-                # # FIXME: This two statements will cause an error of layout inference, which is probably fixed in the latest version of tilelang
-                # for i_s1, i_s2 in T.Parallel(block_S, block_S):
-                #     dg_fragment[i_s1] = dg_fragment[i_s1] + ds_fragment_2[i_s1, i_s2]
-                # for i_s1, i_s2 in T.Parallel(block_S, block_S):
-                #     dg_fragment[i_s2] = dg_fragment[i_s2] - ds_fragment_2[i_s1, i_s2]
 
                 T.copy(ds_fragment, ds_shared)
                 T.gemm(ds_shared, k_shared, dq_fragment)
