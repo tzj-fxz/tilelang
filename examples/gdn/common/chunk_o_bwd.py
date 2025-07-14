@@ -26,6 +26,32 @@ torch.random.manual_seed(0)
 tilelang.disable_cache()
 
 
+def prepare_input_fake(
+    B,
+    S,
+    H,
+    DK,
+    DV,
+    chunk_size,
+    input_dtype,
+    output_dtype,
+    accum_dtype,
+    gate_dtype,
+    state_dtype,
+):
+    BS = S // chunk_size
+    Q = torch.ones(B, S, H, DK, dtype=input_dtype).cuda()
+    K = torch.ones(B, S, H, DK, dtype=input_dtype).cuda()
+    V = torch.ones(B, S, H, DV, dtype=input_dtype).cuda()
+    h = torch.ones(B, BS, H, DK, DV, dtype=input_dtype).cuda()
+    G = torch.ones(B, S, H, dtype=gate_dtype).cuda()
+    dO = torch.ones(B, S, H, DV, dtype=input_dtype).cuda()
+    dh = torch.ones(B, BS, H, DK, DV, dtype=input_dtype).cuda()
+    dv = torch.ones(B, S, H, DV, dtype=output_dtype).cuda()
+    W = torch.ones(B, S, H, DK, dtype=input_dtype).cuda()
+    return Q, K, V, h, G, dO, dh, dv, W
+
+
 def prepare_input(
     B,
     S,
@@ -41,15 +67,15 @@ def prepare_input(
 ):
     BS = S // chunk_size
 
-    Q = torch.ones(B, S, H, DK, dtype=input_dtype).cuda()
-    K = torch.ones(B, S, H, DK, dtype=input_dtype).cuda()
-    V = torch.ones(B, S, H, DV, dtype=input_dtype).cuda()
-    h = torch.ones(B, BS, H, DK, DV, dtype=input_dtype).cuda()
-    G = torch.ones(B, S, H, dtype=gate_dtype).cuda()
-    dO = torch.ones(B, S, H, DV, dtype=input_dtype).cuda()
-    dh = torch.ones(B, BS, H, DK, DV, dtype=input_dtype).cuda()
-    dv = torch.ones(B, S, H, DV, dtype=output_dtype).cuda()
-    W = torch.ones(B, S, H, DK, dtype=input_dtype).cuda()
+    Q = torch.randn(B, S, H, DK, dtype=input_dtype).cuda()
+    K = torch.randn(B, S, H, DK, dtype=input_dtype).cuda()
+    V = torch.randn(B, S, H, DV, dtype=input_dtype).cuda()
+    h = torch.randn(B, BS, H, DK, DV, dtype=input_dtype).cuda()
+    G = torch.randn(B, S, H, dtype=gate_dtype).cuda()
+    dO = torch.randn(B, S, H, DV, dtype=input_dtype).cuda()
+    dh = torch.randn(B, BS, H, DK, DV, dtype=input_dtype).cuda()
+    dv = torch.randn(B, S, H, DV, dtype=output_dtype).cuda()
+    W = torch.randn(B, S, H, DK, dtype=input_dtype).cuda()
     return Q, K, V, h, G, dO, dh, dv, W
 
 
@@ -163,6 +189,8 @@ def tilelang_chunk_o_bwd_dqkwg(
             dg_fragment_2 = T.alloc_fragment((block_S,), dtype=gate_dtype)
             dg_fragment_final = T.alloc_fragment((block_S,), dtype=gate_dtype)
             dg_last_local = T.alloc_local((1,), dtype=gate_dtype)
+            dg_last_fragment = T.alloc_fragment((block_DK, block_DV), dtype=gate_dtype)
+            dg_last_fragment_2 = T.alloc_fragment((block_S, block_DK), dtype=gate_dtype)
             G_shared = T.alloc_shared((block_S, block_DK), dtype=gate_dtype, scope="shared")
             G_last_local = T.alloc_local((1,), dtype=gate_dtype)
 
@@ -183,6 +211,7 @@ def tilelang_chunk_o_bwd_dqkwg(
             T.clear(G_shared)
             T.clear(q_fragment)
             T.clear(k_fragment)
+            T.clear(dg_last_fragment)
 
             T.clear(ds_fragment)
             T.clear(dq_fragment)
@@ -196,12 +225,13 @@ def tilelang_chunk_o_bwd_dqkwg(
                 T.copy(dh[bb, bs, bh, bk * block_DK:(bk + 1) * block_DK, i_v * block_DV:(i_v + 1) * block_DV], dh_shared)
 
                 if use_g:
-                    # FIXME: The Parallel statement of shared memory to local register is not correct
-                    # for i_k, i_v in T.Parallel(block_DK, block_DV):
-                    #     dg_last_local[0] += h_shared[i_k, i_v] * dh_shared[i_k, i_v]
+                    # FIXME: The reduce operation of a whole buffer to a scalar is not supported and will cause incorrect result
+                    for i_k, i_v in T.Parallel(block_DK, block_DV):
+                        dg_last_fragment[i_k, i_v] = h_shared[i_k, i_v] * dh_shared[i_k, i_v]
                     for i_kv in T.serial(block_DK * block_DV):
                         i_k, i_v = i_kv // block_DV, i_kv % block_DV
-                        dg_last_local[0] += h_shared[i_k, i_v] * dh_shared[i_k, i_v]
+                        dg_last_local[0] += dg_last_fragment[i_k, i_v]
+                    # T.print(dg_last_local, msg="dg_last_local_1")
 
                 T.gemm(dO_shared, V_shared, ds_fragment, transpose_B=True)
                 T.gemm(dO_shared, h_shared, dq_fragment, transpose_B=True)
@@ -227,7 +257,9 @@ def tilelang_chunk_o_bwd_dqkwg(
                 for i_s, i_k in T.Parallel(block_S, block_DK):
                     G_shared[i_s, i_k] = G[bb, bs * block_S + i_s, bh]
                 G_last_local[0] = G[bb, bs * block_S + block_S - 1, bh]
-                dg_last_local[0] = dg_last_local[0] * T.exp(G_last_local[0])
+                # Use gmem directly instead of local register
+                dg_last_local[0] = dg_last_local[0] * T.exp(G[bb, bs * block_S + block_S - 1, bh])
+                # T.print(dg_last_local, msg="dg_last_local_2")
 
                 for i_s, i_k in T.Parallel(block_S, block_DK):
                     dq_fragment[i_s, i_k] = dq_fragment[i_s, i_k] * T.exp(G_shared[i_s, i_k]) * scale
@@ -254,14 +286,14 @@ def tilelang_chunk_o_bwd_dqkwg(
                 # for i_s, i_k in T.Parallel(block_S, block_DK):
                 #     # FIXME: This statement will cause an error of layout inference, which is probably fixed in the latest version of tilelang
                 #     dg_fragment[i_s] = dg_fragment[i_s] - k_shared[i_s, i_k] * dk_fragment[i_s, i_k]
-                T.print(dg_last_local, msg="before dg_last_local")
 
-                # FIXME: The Parallel statement of shared memory to local register is not correct
-                # for i_s, i_k in T.Parallel(block_S, block_DK):
-                #     dg_last_local[0] = dg_last_local[0] + dk_fragment[i_s, i_k] * k_shared[i_s, i_k]
+                # FIXME: The reduce operation of a whole buffer to a scalar is not supported and will cause incorrect result
+                for i_s, i_k in T.Parallel(block_S, block_DK):
+                    dg_last_fragment_2[i_s, i_k] = dk_fragment[i_s, i_k] * k_shared[i_s, i_k]
                 for i_sk in T.serial(block_S * block_DK):
                     i_s, i_k = i_sk // block_DK, i_sk % block_DK
-                    dg_last_local[0] = dg_last_local[0] + dk_fragment[i_s, i_k] * k_shared[i_s, i_k]
+                    dg_last_local[0] = dg_last_local[0] + dg_last_fragment_2[i_s, i_k]
+                # T.print(dg_last_local, msg="dg_last_local_3")
 
                 for i_s1, i_s2 in T.Parallel(block_S, block_S):
                     with T.If(i_s1 >= i_s2 and G_shared[i_s1, 0] - G_shared[i_s2, 0] <= 0):
@@ -294,8 +326,9 @@ def tilelang_chunk_o_bwd_dqkwg(
                     with T.If(i_s >= block_S - 1):
                         with T.Then():
                             dg_fragment_final[i_s] = dg_fragment_final[i_s] + dg_last_local[0]
+                # T.print(dg_last_local, msg="dg_last_local_4")
 
-                T.print(dg_last_local, msg="after dg_last_local")
+                # T.print(dg_last_local, msg="after dg_last_local")
                 T.copy(dq_fragment, dq[bb, bs * block_S:(bs + 1) * block_S, bh, bk * block_DK:(bk + 1) * block_DK])
                 T.copy(dk_fragment, dk[bb, bs * block_S:(bs + 1) * block_S, bh, bk * block_DK:(bk + 1) * block_DK])
                 for i_s in T.Parallel(block_S):
