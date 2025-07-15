@@ -265,9 +265,14 @@ def run_test(
     )
     
     # fla ref
-    h_ref, V_new_ref, final_state_ref = chunk_gated_delta_rule_fwd_h(
-        K, W, U, None, initial_state, store_final_state, chunk_size, save_new_value
-    )
+    if use_g:
+        h_ref, V_new_ref, final_state_ref = chunk_gated_delta_rule_fwd_h(
+            K, W, U, G, initial_state, store_final_state, chunk_size, save_new_value
+        )
+    else:
+        h_ref, V_new_ref, final_state_ref = chunk_gated_delta_rule_fwd_h(
+            K, W, U, None, initial_state, store_final_state, chunk_size, save_new_value
+        )
 
     # tilelang
     program = tilelang_chunk_gated_delta_rule_fwd_h(
