@@ -228,6 +228,38 @@ TL_DEVICE void mbarrier_wait(uint64_t &smem_barrier, int phase_bit) {
                "r"(phase_bit));
 }
 
+TL_DEVICE void mbarrier_test_wait(uint64_t &smem_barrier, int phase_bit) {
+  uint32_t smem_int_ptr = smem_ptr_to_uint(&smem_barrier);
+  asm volatile (
+    "{\n"
+    ".reg .pred P1;\n"
+    "LAB_WAIT:\n"
+    "mbarrier.test_wait.parity.shared::cta.b64 P1, [%0], %1;\n"
+    "@!P1                      bra.uni DONE;\n"
+    "nanosleep.u32 5;\n"
+    "bra.uni LAB_WAIT;\n"
+    "DONE:\n"
+    "}\n" ::"r"(smem_int_ptr),
+    "r"(phase_bit));
+}
+
+TL_DEVICE uint32_t mbarrier_try_wait(uint64_t &smem_barrier, int phase_bit) {
+
+  uint32_t smem_int_ptr = smem_ptr_to_uint(&smem_barrier);
+  uint32_t waitComplete;
+
+  asm volatile(
+      "{\n\t"
+      ".reg .pred P1; \n\t"
+      "mbarrier.try_wait.parity.shared.b64 P1, [%1], %2; \n\t"
+      "selp.b32 %0, 1, 0, P1; \n\t"
+      "}"
+      : "=r"(waitComplete)
+      : "r"(smem_int_ptr), "r"(phase_bit));
+
+  return waitComplete;
+}
+
 TL_DEVICE void mbarrier_arrive(uint64_t &smem_barrier) {
   uint32_t smem_int_ptr = smem_ptr_to_uint(&smem_barrier);
   asm volatile("mbarrier.arrive.shared.b64 _, [%0];" : : "r"(smem_int_ptr));

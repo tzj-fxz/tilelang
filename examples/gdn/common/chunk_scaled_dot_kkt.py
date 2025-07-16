@@ -82,6 +82,7 @@ def tilelang_chunk_scaled_dot_kkt_fwd(
             # !! Pay attention to the scope of the shared memory: may cause misaligned address when shape is one dimension or the buffer is too small
             Beta_shared = T.alloc_shared((block_S,), dtype=input_dtype, scope="shared")
             K_shared = T.alloc_shared((block_S, block_DK), dtype=input_dtype)
+            A_shared = T.alloc_shared((block_S, block_S), dtype=output_dtype)
             Beta_K_fragment = T.alloc_fragment((block_S, block_DK), dtype=input_dtype)
             A_fragment = T.alloc_fragment((block_S, block_S), dtype=accum_dtype)
             
@@ -91,6 +92,7 @@ def tilelang_chunk_scaled_dot_kkt_fwd(
 
             T.annotate_layout({
                 K_shared: tilelang.layout.make_swizzled_layout(K_shared),
+                A_shared: tilelang.layout.make_swizzled_layout(A_shared),
             })
 
             T.fill(A_fragment, 0)
@@ -112,18 +114,19 @@ def tilelang_chunk_scaled_dot_kkt_fwd(
                 for i_s1, i_s2 in T.Parallel(block_S, block_S):
                     G_diff_local[i_s1, i_s2] = G_shared[i_s1] - G_shared[i_s2]
                 for i_s1, i_s2 in T.Parallel(block_S, block_S):
-                    with T.If(G_diff_local[i_s1, i_s2] <= 0):
+                    with T.If(G_diff_local[i_s1, i_s2] <= 0 and i_s1 > i_s2):
                         with T.Then():
                             A_fragment[i_s1, i_s2] = A_fragment[i_s1, i_s2] * T.exp(G_diff_local[i_s1, i_s2])
                         with T.Else():
                             A_fragment[i_s1, i_s2] = 0
-            
-            for i_s1, i_s2 in T.Parallel(block_S, block_S):
-                with T.If(i_s1 <= i_s2):
-                    with T.Then():
-                        A_fragment[i_s1, i_s2] = 0
+            else:
+                for i_s1, i_s2 in T.Parallel(block_S, block_S):
+                    with T.If(i_s1 <= i_s2):
+                        with T.Then():
+                            A_fragment[i_s1, i_s2] = 0
 
-            T.copy(A_fragment, A[bb, bs * block_S:(bs + 1) * block_S, bh, :])
+            T.copy(A_fragment, A_shared)
+            T.copy(A_shared, A[bb, bs * block_S:(bs + 1) * block_S, bh, :])
 
     return kernel
 

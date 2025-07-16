@@ -1,11 +1,12 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
-
-from inspect import getattr_static
-import tilelang
-import tilelang.language as T
 import sys
 import os
+# (zhengju) To use the debug code, you need to set the modified tilelang repository path to sys.path
+# sys.path.insert(0, "/root/workspace/tilelang")
+
+import tilelang
+import tilelang.language as T
 
 # Add your fla repository path to sys.path
 # You can set the FLA_REPO_PATH environment variable to point to your fla repository
@@ -20,10 +21,26 @@ import torch
 from tilelang.engine.callback import register_cuda_postproc_callback
 
 
+# (zhengju) Now we slightly modify the generated cuda code from tilelang lower in
+# the debug folder to make the performance better. To disable this callback,
+# you can just comment out the following function.
+@register_cuda_postproc_callback
+def tilelang_callback_cuda_postproc(code, _):
+    cuda_code = open("../debug/chunk_delta_h_fuse.cu", "r").read()
+    code = cuda_code
+    return code
 
 torch.random.manual_seed(0)
 
 tilelang.disable_cache()
+
+
+def l2_normalize(x):
+    norm_size = 128
+    BD = x.shape[-1] // norm_size
+    for i_d in range(BD):
+        x[:, :, :, i_d * norm_size:(i_d + 1) * norm_size] = x[:, :, :, i_d * norm_size:(i_d + 1) * norm_size] / torch.norm(x[:, :, :, i_d * norm_size:(i_d + 1) * norm_size], dim=-1, keepdim=True)
+    return x
 
 
 def prepare_input(
@@ -38,12 +55,19 @@ def prepare_input(
     accum_dtype,
     gate_dtype,
 ):
-    BS = S // chunk_size
-    K = torch.rand(B, S, H, DK, dtype=input_dtype).cuda()
-    W = torch.rand(B, S, H, DK, dtype=input_dtype).cuda()
-    U = torch.rand(B, S, H, DV, dtype=input_dtype).cuda()
-    G = torch.rand(B, S, H, dtype=gate_dtype).cuda()
-    initial_state = torch.rand(B, H, DK, DV, dtype=input_dtype).cuda()
+    BS = chunk_size
+    K = torch.randn(B, S, H, DK, dtype=input_dtype).cuda()
+    K = l2_normalize(K)
+    W = torch.randn(B, S, H, DK, dtype=input_dtype).cuda()
+    W = l2_normalize(W)
+    U = torch.randn(B, S, H, DV, dtype=input_dtype).cuda()
+    U = l2_normalize(U)
+    G = torch.randn(B, S, H, dtype=gate_dtype).cuda()
+    # K = torch.randn(B, S, H, DK, dtype=input_dtype).cuda() / (DK) ** 0.5
+    # W = torch.randn(B, S, H, DK, dtype=input_dtype).cuda() / (DK) ** 0.5
+    # U = torch.randn(B, S, H, DV, dtype=input_dtype).cuda() / (DV) ** 0.5
+    # G = torch.randn(B, S, H, dtype=gate_dtype).cuda()
+    initial_state = torch.randn(B, H, DK, DV, dtype=input_dtype).cuda()
     return K, W, U, G, initial_state
 
 
@@ -140,6 +164,8 @@ def tilelang_chunk_gated_delta_rule_fwd_h(
                 # G_diff_local: T.Fragment(G_diff_local.shape, forward_thread_fn=lambda i: i // 16 * 32 + i % 8 * 4),
             })
 
+            T.use_swizzle(10)
+
             if use_initial_state:
                 T.copy(initial_state[bb, bh, 0:DK, bv * block_DV:(bv + 1) * block_DV], b_h_shared)
                 T.copy(b_h_shared, b_h_fragment)
@@ -152,7 +178,7 @@ def tilelang_chunk_gated_delta_rule_fwd_h(
 
                 # Cast the intermediate result to input dtype
                 # T.copy(b_h, b_h_input_dtype)
-                
+
                 # Recurrence
                 # T.clear(V_new_fragment)
                 T.copy(W[bb, i_s * block_S:(i_s + 1) * block_S, bh, 0:DK], W_shared)
@@ -177,11 +203,13 @@ def tilelang_chunk_gated_delta_rule_fwd_h(
                         G_shared[i_s2, i_v] = G[bb, i_s * block_S + i_s2, bh]
                     T.copy(G_shared, G_fragment)
                     for i_s2, i_v in T.Parallel(block_S, block_DV):
+                        # with T.If(G_last_local[0] - G[bb, i_s * block_S + i_s2, bh] <= 0):
                         # with T.If(G_last_local[0] - G_shared[i_s2, i_v] <= 0):
                         with T.If(G_last_local[0] - G_fragment[i_s2, i_v] <= 0):
                             with T.Then():
                                 V_new_fragment[i_s2, i_v] = V_new_fragment[i_s2, i_v] * T.exp(G_last_local[0] - G_fragment[i_s2, i_v])
                                 # V_new_fragment[i_s2, i_v] = V_new_fragment[i_s2, i_v] * T.exp(G_last_local[0] - G_shared[i_s2, i_v])
+                                # V_new_fragment[i_s2, i_v] = V_new_fragment[i_s2, i_v] * T.exp(G_last_local[0] - G[bb, i_s * block_S + i_s2, bh])
                             with T.Else():
                                 V_new_fragment[i_s2, i_v] = 0
                     G_last_local[0] = T.exp(G_last_local[0])
@@ -265,14 +293,9 @@ def run_test(
     )
     
     # fla ref
-    if use_g:
-        h_ref, V_new_ref, final_state_ref = chunk_gated_delta_rule_fwd_h(
-            K, W, U, G, initial_state, store_final_state, chunk_size, save_new_value
-        )
-    else:
-        h_ref, V_new_ref, final_state_ref = chunk_gated_delta_rule_fwd_h(
-            K, W, U, None, initial_state, store_final_state, chunk_size, save_new_value
-        )
+    h_ref, V_new_ref, final_state_ref = chunk_gated_delta_rule_fwd_h(
+        K, W, U, G, initial_state, store_final_state, chunk_size, save_new_value
+    )
 
     # tilelang
     program = tilelang_chunk_gated_delta_rule_fwd_h(
@@ -281,18 +304,18 @@ def run_test(
     kernel = tilelang.compile(program)
     # kernel = tilelang.compile(program, pass_configs={"tl.disable_warp_specialized" : True})
     # kernel = tilelang.compile(program, pass_configs={"tl.disable_tma_lower": True, "tl.disable_warp_specialized": True})
-    print(kernel.get_kernel_source())
     kernel(K, W, U, G, initial_state, h_tilelang, final_state_tilelang, V_new_tilelang)
+    # (zhengju) If you want to print the generated cuda code, you can uncomment the following line
+    # print("CUDA Code:\n", kernel.get_kernel_source())
 
     fla_time = do_bench(chunk_gated_delta_rule_fwd_h, K, W, U, G, initial_state, store_final_state, chunk_size, save_new_value)
     tilelang_time = do_bench(kernel, K, W, U, G, initial_state, h_tilelang, final_state_tilelang, V_new_tilelang)
 
-    print(f"tilelang time: {tilelang_time} ms")
-    print(f"fla time: {fla_time} ms")
-
-    # check
+    # check correctness
     try:
-        torch.testing.assert_close(h_ref, h_tilelang, rtol=1e-2, atol=1e-2, equal_nan=True)
+        h_ref_fp32 = h_ref.to(torch.float32)
+        h_tilelang_fp32 = h_tilelang.to(torch.float32)
+        torch.testing.assert_close(h_ref_fp32, h_tilelang_fp32, rtol=2e-3, atol=2e-3, equal_nan=True)
         print("tilelang chunk gated delta rule fwd h passed √")
     except Exception as e:
         print("tilelang chunk gated delta rule fwd h failed ✗")
@@ -301,7 +324,9 @@ def run_test(
         print(e)
     
     try:
-        torch.testing.assert_close(final_state_ref, final_state_tilelang, rtol=1e-2, atol=1e-2, equal_nan=True)
+        final_state_ref_fp32 = final_state_ref.to(torch.float32)
+        final_state_tilelang_fp32 = final_state_tilelang.to(torch.float32)
+        torch.testing.assert_close(final_state_ref_fp32, final_state_tilelang_fp32, rtol=2e-3, atol=2e-3, equal_nan=True)
         print("tilelang chunk gated delta rule fwd final_state passed √")
     except Exception as e:
         print("tilelang chunk gated delta rule fwd final_state failed ✗")
@@ -310,13 +335,18 @@ def run_test(
         print(e)
     
     try:
-        torch.testing.assert_close(V_new_ref, V_new_tilelang, rtol=1e-2, atol=1e-2, equal_nan=True)
+        V_new_ref_fp32 = V_new_ref.to(torch.float32)
+        V_new_tilelang_fp32 = V_new_tilelang.to(torch.float32)
+        torch.testing.assert_close(V_new_ref_fp32, V_new_tilelang_fp32, rtol=2e-3, atol=2e-3, equal_nan=True)
         print("tilelang chunk gated delta rule fwd V_new passed √")
     except Exception as e:
         print("tilelang chunk gated delta rule fwd V_new failed ✗")
         # print("ref V_new:", V_new_ref)
         # print("tilelang V_new:", V_new_tilelang)
         print(e)
+
+    print(f"tilelang time: {tilelang_time} ms")
+    print(f"fla time: {fla_time} ms")
 
 
 if __name__ == "__main__":
@@ -341,45 +371,3 @@ if __name__ == "__main__":
         threads=128,
         num_stages=1,
     )
-    # run_test(
-    #     B=1,
-    #     S=256,
-    #     H=1,
-    #     DK=64,
-    #     DV=32,
-    #     input_dtype="bfloat16",
-    #     output_dtype="bfloat16",
-    #     accum_dtype="float32",
-    #     gate_dtype="float32",
-    #     state_dtype="float32",
-    #     chunk_size=64,
-    #     use_g=True,
-    #     use_initial_state=True,
-    #     store_final_state=True,
-    #     save_new_value=True,
-    #     block_DK=64,
-    #     block_DV=32,
-    #     threads=128,
-    #     num_stages=2,
-    # )
-    # run_test(
-    #     B=1,
-    #     S=1024,
-    #     H=2,
-    #     DK=128,
-    #     DV=128,
-    #     input_dtype="bfloat16",
-    #     output_dtype="bfloat16",
-    #     accum_dtype="float32",
-    #     gate_dtype="float32",
-    #     state_dtype="float32",
-    #     chunk_size=64,
-    #     use_g=True,
-    #     use_initial_state=True,
-    #     store_final_state=True,
-    #     save_new_value=True,
-    #     block_DK=64,
-    #     block_DV=32,
-    #     threads=128,
-    #     num_stages=2,
-    # )
