@@ -7,6 +7,7 @@ sys.path.insert(0, "/root/workspace/tilelang")
 
 import tilelang
 import tilelang.language as T
+from tilelang.engine.callback import register_cuda_postproc_callback
 print(tilelang.__file__)
 
 # Add your fla repository path to sys.path
@@ -100,6 +101,13 @@ def prepare_output(
     return dq, dk, dw, dg
 
 
+# @register_cuda_postproc_callback
+# def tilelang_callback_cuda_postproc(code, _):
+#     cuda_code = open("../debug/chunk_o_bwd3.log", "r").read()
+#     code = cuda_code
+#     return code
+
+
 def tilelang_chunk_o_bwd_dqkwg(
     # task config
     B,
@@ -170,13 +178,13 @@ def tilelang_chunk_o_bwd_dqkwg(
             q_shared = T.alloc_shared((block_S, block_DK), dtype=input_dtype)
             k_shared = T.alloc_shared((block_S, block_DK), dtype=input_dtype)
             ds_shared = T.alloc_shared((block_S, block_S), dtype=output_dtype)
-            dg_shared = T.alloc_shared((block_S,), dtype=gate_dtype)
+            dg_shared_1 = T.alloc_shared((block_S,), dtype=gate_dtype)
             dg_shared_2 = T.alloc_shared((block_S,), dtype=gate_dtype)
-            dg_shared_final = T.alloc_shared((block_S,), dtype=gate_dtype)
+            dk_shared = T.alloc_shared((block_S, block_DK), dtype=accum_dtype)
 
             ds_fragment = T.alloc_fragment((block_S, block_S), dtype=accum_dtype)
             ds_fragment_positive = T.alloc_fragment((block_S, block_S), dtype=accum_dtype)
-            ds_fragment_negative = T.alloc_fragment((block_S, block_S), dtype=accum_dtype)
+            ds_fragment_positive_transpose = T.alloc_fragment((block_S, block_S), dtype=accum_dtype)
             dq_fragment = T.alloc_fragment((block_S, block_DK), dtype=accum_dtype)
             dk_fragment = T.alloc_fragment((block_S, block_DK), dtype=accum_dtype)
             dk_fragment_2 = T.alloc_fragment((block_S, block_DK), dtype=accum_dtype)
@@ -188,9 +196,11 @@ def tilelang_chunk_o_bwd_dqkwg(
             dg_fragment = T.alloc_fragment((block_S,), dtype=gate_dtype)
             dg_fragment_2 = T.alloc_fragment((block_S,), dtype=gate_dtype)
             dg_fragment_final = T.alloc_fragment((block_S,), dtype=gate_dtype)
-            dg_last_local = T.alloc_local((1,), dtype=gate_dtype)
-            dg_last_fragment = T.alloc_fragment((block_DK, block_DV), dtype=gate_dtype)
-            dg_last_fragment_2 = T.alloc_fragment((block_S, block_DK), dtype=gate_dtype)
+            dg_last_local = T.alloc_local((2,), dtype=gate_dtype)
+            dg_last_fragment = T.alloc_fragment((block_DV * block_DK), dtype=gate_dtype)
+            dg_last_fragment_scalar = T.alloc_fragment((1,), dtype=gate_dtype)
+            dg_last_fragment_2 = T.alloc_fragment((block_S * block_DK), dtype=gate_dtype)
+            dg_last_fragment_scalar_2 = T.alloc_fragment((1,), dtype=gate_dtype)
             G_shared = T.alloc_shared((block_S, block_DK), dtype=gate_dtype, scope="shared")
             G_last_local = T.alloc_local((1,), dtype=gate_dtype)
 
@@ -225,13 +235,15 @@ def tilelang_chunk_o_bwd_dqkwg(
                 T.copy(dh[bb, bs, bh, bk * block_DK:(bk + 1) * block_DK, i_v * block_DV:(i_v + 1) * block_DV], dh_shared)
 
                 if use_g:
+                    T.clear(dg_last_fragment_scalar)
                     # FIXME: The reduce operation of a whole buffer to a scalar is not supported and will cause incorrect result
-                    for i_k, i_v in T.Parallel(block_DK, block_DV):
-                        dg_last_fragment[i_k, i_v] = h_shared[i_k, i_v] * dh_shared[i_k, i_v]
-                    for i_kv in T.serial(block_DK * block_DV):
+                    # for i_kv in T.Parallel(block_DK * block_DV):
+                    #     dg_last_fragment[i_kv] = h_shared[i_kv // block_DV, i_kv % block_DV] * dh_shared[i_kv // block_DV, i_kv % block_DV]
+                    for i_kv in T.Parallel(block_DK * block_DV):
                         i_k, i_v = i_kv // block_DV, i_kv % block_DV
-                        dg_last_local[0] += dg_last_fragment[i_k, i_v]
-                    # T.print(dg_last_local, msg="dg_last_local_1")
+                        dg_last_fragment[i_kv] = h_shared[i_k, i_v] * dh_shared[i_k, i_v]
+                    T.reduce_sum(dg_last_fragment, dg_last_fragment_scalar, dim=-1, clear=False)
+                    dg_last_local[0] += dg_last_fragment_scalar[0]
 
                 T.gemm(dO_shared, V_shared, ds_fragment, transpose_B=True)
                 T.gemm(dO_shared, h_shared, dq_fragment, transpose_B=True)
@@ -253,6 +265,7 @@ def tilelang_chunk_o_bwd_dqkwg(
 
             if use_g:
                 T.clear(dg_fragment)
+                # T.clear(dg_fragment_1)
                 T.clear(dg_fragment_2)
                 for i_s, i_k in T.Parallel(block_S, block_DK):
                     G_shared[i_s, i_k] = G[bb, bs * block_S + i_s, bh]
@@ -262,20 +275,20 @@ def tilelang_chunk_o_bwd_dqkwg(
                 # T.print(dg_last_local, msg="dg_last_local_2")
 
                 for i_s, i_k in T.Parallel(block_S, block_DK):
-                    dq_fragment[i_s, i_k] = dq_fragment[i_s, i_k] * T.exp(G_shared[i_s, i_k]) * scale
+                    # dq_fragment[i_s, i_k] = dq_fragment[i_s, i_k] * T.exp(G_shared[i_s, i_k]) * scale
+                    dq_fragment[i_s, i_k] = dq_fragment[i_s, i_k] * T.exp(G[bb, bs * block_S + i_s, bh]) * scale
                 T.clear(dg_fragment_reduce_tmp)
                 for i_s, i_k in T.Parallel(block_S, block_DK):
                     dg_fragment_reduce_tmp[i_s, i_k] = dq_fragment[i_s, i_k] * q_shared[i_s, i_k]
                 # FIXME: The reduce_sum statement with clear=True will cause an error of warp specialized pass
                 T.reduce_sum(dg_fragment_reduce_tmp, dg_fragment, dim=-1, clear=False)
-                # for i_s, i_k in T.Parallel(block_S, block_DK):
-                #     # FIXME: This statement will cause an error of layout inference, which is probably fixed in the latest version of tilelang
-                #     dg_fragment[i_s] = dg_fragment[i_s] + dq_fragment[i_s, i_k] * q_shared[i_s, i_k]
 
                 for i_s, i_k in T.Parallel(block_S, block_DK):
-                    with T.If(G_last_local[0] - G_shared[i_s, i_k] <= 0):
+                    # with T.If(G_last_local[0] - G_shared[i_s, i_k] <= 0):
+                    with T.If(G_last_local[0] - G[bb, bs * block_S + i_s, bh] <= 0):
                         with T.Then():
-                            dk_fragment[i_s, i_k] = dk_fragment[i_s, i_k] * T.exp(G_last_local[0] - G_shared[i_s, i_k])
+                            # dk_fragment[i_s, i_k] = dk_fragment[i_s, i_k] * T.exp(G_last_local[0] - G_shared[i_s, i_k])
+                            dk_fragment[i_s, i_k] = dk_fragment[i_s, i_k] * T.exp(G_last_local[0] - G[bb, bs * block_S + i_s, bh])
                         with T.Else():
                             dk_fragment[i_s, i_k] = 0
                 T.clear(dg_fragment_reduce_tmp)
@@ -283,40 +296,46 @@ def tilelang_chunk_o_bwd_dqkwg(
                     dg_fragment_reduce_tmp[i_s, i_k] = dk_fragment[i_s, i_k] * (-k_shared[i_s, i_k])
                 # FIXME: The reduce_sum statement with clear=True will cause an error of warp specialized pass
                 T.reduce_sum(dg_fragment_reduce_tmp, dg_fragment, dim=-1, clear=False)
-                # for i_s, i_k in T.Parallel(block_S, block_DK):
-                #     # FIXME: This statement will cause an error of layout inference, which is probably fixed in the latest version of tilelang
-                #     dg_fragment[i_s] = dg_fragment[i_s] - k_shared[i_s, i_k] * dk_fragment[i_s, i_k]
 
                 # FIXME: The reduce operation of a whole buffer to a scalar is not supported and will cause incorrect result
-                for i_s, i_k in T.Parallel(block_S, block_DK):
-                    dg_last_fragment_2[i_s, i_k] = dk_fragment[i_s, i_k] * k_shared[i_s, i_k]
-                for i_sk in T.serial(block_S * block_DK):
+                T.copy(dk_fragment, dk_shared)
+                T.clear(dg_last_fragment_scalar_2)
+                for i_sk in T.Parallel(block_S * block_DK):
                     i_s, i_k = i_sk // block_DK, i_sk % block_DK
-                    dg_last_local[0] = dg_last_local[0] + dg_last_fragment_2[i_s, i_k]
-                # T.print(dg_last_local, msg="dg_last_local_3")
+                    dg_last_fragment_2[i_sk] = dk_shared[i_s, i_k] * k_shared[i_s, i_k]
+                T.reduce_sum(dg_last_fragment_2, dg_last_fragment_scalar_2, dim=-1, clear=False)
+                dg_last_local[1] = dg_last_fragment_scalar_2[0]
+                # T.print(dg_last_local, msg="dg_last_local3")
 
                 for i_s1, i_s2 in T.Parallel(block_S, block_S):
-                    with T.If(i_s1 >= i_s2 and G_shared[i_s1, 0] - G_shared[i_s2, 0] <= 0):
+                    # with T.If(i_s1 >= i_s2 and G_shared[i_s1, 0] - G_shared[i_s2, 0] <= 0):
+                    with T.If(i_s1 >= i_s2 and G[bb, bs * block_S + i_s1, bh] - G[bb, bs * block_S + i_s2, bh] <= 0):
                         with T.Then():
-                            ds_fragment[i_s1, i_s2] = ds_fragment[i_s1, i_s2] * T.exp(G_shared[i_s1, 0] - G_shared[i_s2, 0]) * scale
+                            # ds_fragment[i_s1, i_s2] = ds_fragment[i_s1, i_s2] * T.exp(G_shared[i_s1, 0] - G_shared[i_s2, 0]) * scale
+                            ds_fragment[i_s1, i_s2] = ds_fragment[i_s1, i_s2] * T.exp(G[bb, bs * block_S + i_s1, bh] - G[bb, bs * block_S + i_s2, bh]) * scale
                         with T.Else():
                             ds_fragment[i_s1, i_s2] = 0
                 
                 T.clear(ds_fragment_positive)
-                T.clear(ds_fragment_negative)
+                T.clear(ds_fragment_positive_transpose)
                 T.gemm(q_shared, k_shared, ds_fragment_positive, transpose_B=True)
                 for i_s1, i_s2 in T.Parallel(block_S, block_S):
                     ds_fragment_positive[i_s1, i_s2] = ds_fragment[i_s1, i_s2] * ds_fragment_positive[i_s1, i_s2]
+                
                 # FIXME: The reduce_sum statement with clear=True will cause an error of warp specialized pass
                 T.reduce_sum(ds_fragment_positive, dg_fragment, dim=1, clear=False)
-                T.copy(dg_fragment, dg_shared)
+                T.copy(dg_fragment, dg_shared_1)
+
+                # We should transpose the matrix because the reduce_sum statement can only reduce along the last dimension
                 for i_s1, i_s2 in T.Parallel(block_S, block_S):
-                    ds_fragment_negative[i_s1, i_s2] = -ds_fragment_positive[i_s1, i_s2]
+                    ds_fragment_positive_transpose[i_s2, i_s1] = ds_fragment_positive[i_s1, i_s2]
+
                 # FIXME: The reduce_sum statement with clear=True will cause an error of warp specialized pass
-                T.reduce_sum(ds_fragment_negative, dg_fragment_2, dim=0, clear=False)
+                T.reduce_sum(ds_fragment_positive_transpose, dg_fragment_2, dim=1, clear=False)
                 T.copy(dg_fragment_2, dg_shared_2)
+                
                 for i_s in T.Parallel(block_S):
-                    dg_fragment_final[i_s] = dg_shared[i_s] + dg_shared_2[i_s]
+                    dg_fragment_final[i_s] = dg_shared_1[i_s] - dg_shared_2[i_s]
 
                 T.copy(ds_fragment, ds_shared)
                 T.gemm(ds_shared, k_shared, dq_fragment)
@@ -325,10 +344,9 @@ def tilelang_chunk_o_bwd_dqkwg(
                 for i_s in T.Parallel(block_S):
                     with T.If(i_s >= block_S - 1):
                         with T.Then():
-                            dg_fragment_final[i_s] = dg_fragment_final[i_s] + dg_last_local[0]
+                            dg_fragment_final[i_s] = dg_fragment_final[i_s] + dg_last_local[0] + dg_last_local[1]
                 # T.print(dg_last_local, msg="dg_last_local_4")
 
-                # T.print(dg_last_local, msg="after dg_last_local")
                 T.copy(dq_fragment, dq[bb, bs * block_S:(bs + 1) * block_S, bh, bk * block_DK:(bk + 1) * block_DK])
                 T.copy(dk_fragment, dk[bb, bs * block_S:(bs + 1) * block_S, bh, bk * block_DK:(bk + 1) * block_DK])
                 for i_s in T.Parallel(block_S):
@@ -350,6 +368,36 @@ def tilelang_chunk_o_bwd_dqkwg(
                 T.copy(dk_fragment, dk[bb, bs * block_S:(bs + 1) * block_S, bh, bk * block_DK:(bk + 1) * block_DK])
 
     return kernel
+
+
+def do_bench(fn, *args, warmup=10, rep=10, **kwargs):
+    """
+    Do benchmark for a function.
+    """
+    import time
+    start_event = [torch.cuda.Event(enable_timing=True) for i in range(rep)]
+    end_event = [torch.cuda.Event(enable_timing=True) for i in range(rep)]
+    for i in range(warmup):
+        fn(*args, **kwargs)
+
+
+    start_time = time.time()
+    torch.cuda.synchronize()
+    for i in range(rep):
+        start_event[i].record()
+        fn(*args, **kwargs)
+        end_event[i].record()
+    torch.cuda.synchronize()
+    end_time = time.time()
+
+    # Record clocks
+    times = torch.tensor(
+        [s.elapsed_time(e) for s, e in zip(start_event, end_event)],
+        dtype=torch.float,
+    )
+
+    # return (end_time - start_time) * 1000 / rep
+    return times.mean().item()
 
 
 def run_test(
@@ -388,6 +436,13 @@ def run_test(
     kernel = tilelang.compile(program, pass_configs={tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True, tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True})
     print(kernel.get_kernel_source())
     kernel(Q, K, V, h, G, dO, dh, dv, W, dq_tilelang, dk_tilelang, dw_tilelang, dg_tilelang)
+
+    fla_time = do_bench(chunk_bwd_dqkwg, Q, K, V, G, dO, h, dh, dv, W, chunk_size=chunk_size, scale=scale)
+    tilelang_time = do_bench(kernel, Q, K, V, h, G, dO, dh, dv, W, dq_tilelang, dk_tilelang, dw_tilelang, dg_tilelang)
+
+    print(f"fla time: {fla_time} ms")
+    print(f"tilelang time: {tilelang_time} ms")
+
     if use_g:
         dg_tilelang = dg_tilelang.sum(dim=0)
 
@@ -417,8 +472,12 @@ def run_test(
         except Exception as e:
             print("tilelang chunk o bwd dg failed ✗")
             print(e)
-            print("dg ref:", dg_ref)
-            print("dg tilelang:", dg_tilelang)
+            print("dg ref (rows 0, 64, 128, ...):")
+            for i in range(0, dg_ref.shape[1], 64):
+                print(f"row {i + 63}: {dg_ref[0][i + 63]}")
+            print("dg tilelang (rows 0, 64, 128, ...):")
+            for i in range(0, dg_tilelang.shape[1], 64):
+                print(f"row {i + 63}: {dg_tilelang[0][i + 63]}")
     
     if use_dw:
         try:
@@ -436,7 +495,7 @@ if __name__ == "__main__":
     DV = 128
     run_test(
         B=1,
-        S=512,
+        S=32768,
         H=8,
         DK=DK,
         DV=DV,
@@ -455,23 +514,3 @@ if __name__ == "__main__":
         threads=128,
         num_stages=0,
     )
-    # run_test(
-    #     B=1,
-    #     S=1024,
-    #     H=4,
-    #     DK=DK,
-    #     DV=DV,
-    #     input_dtype="bfloat16",
-    #     output_dtype="bfloat16",
-    #     accum_dtype="float32",
-    #     gate_dtype="float32",
-    #     state_dtype="float32",
-    #     chunk_size=64,
-    #     scale=DK ** -0.5,
-    #     use_g=False,
-    #     use_dw=True,
-    #     block_DK=32,
-    #     block_DV=32,
-    #     threads=128,
-    #     num_stages=0,
-    # )
