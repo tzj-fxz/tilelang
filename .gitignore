@@ -19,6 +19,7 @@
 debug/
 build/
 dist/
+wheelhouse/
 __pycache__
 nnfusion.tar.gz
 
@@ -98,3 +99,5 @@ tilelang/jit/adapter/cython/.cycache
 
 # redundant nvshmem source code
 nvshmem_src/
+# cache directory for clangd
+.cache/

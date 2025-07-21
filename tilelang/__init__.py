@@ -7,7 +7,6 @@ from tqdm import tqdm
 
 use_distributed = True
 
-
 class TqdmLoggingHandler(logging.Handler):
     """Custom logging handler that directs log output to tqdm progress bar to avoid interference."""
 
