@@ -1,5 +1,6 @@
 import torch
-import pynvshmem
+# TODO: remove this
+import triton_dist.pynvshmem as pynvshmem
 import datetime
 import os
 from typing import List, Union, Tuple, Callable, Sequence
