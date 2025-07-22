@@ -11,7 +11,7 @@ export BYTED_TORCH_BYTECCL=O0
 export NCCL_IB_TIMEOUT=${NCCL_IB_TIMEOUT:=23}
 
 # set nccl log level
-export NCCL_DEBUG=${NCCL_DEBUG:=WARN}  # set env var. `NCCL_DEBUG` to expected NCCL log level
+export NCCL_DEBUG=${NCCL_DEBUG:="WARN"}  # set env var. `NCCL_DEBUG` to expected NCCL log level
 # Choices: [VERSION, WARN(default), INFO, TRACE], 
 
 # set launch configurations
@@ -28,14 +28,25 @@ IB_HCA=mlx5
 export NCCL_IB_GID_INDEX=${NCCL_IB_GID_INDEX:=3}
 export NVSHMEM_IB_GID_INDEX=3
 
+# set whether to use memory check
+use_memcheck=${MEMCHECK:=0}  # set env var. `MEMCHECK` to 1 to enable memory check via compute-sanitizer
 
-CMD="torchrun \
+if [ ${use_memcheck} -eq 1 ]; then
+  CMD="compute-sanitizer --tool memcheck \
+  torchrun \
   --node_rank=${node_rank} \
   --nproc_per_node=${nproc_per_node} \
   --nnodes=${nnodes} \
   ${TILELANG_EXTRA_TORCHRUN_ARGS} ${additional_args} $@"
+else
+  CMD="torchrun \
+  --node_rank=${node_rank} \
+  --nproc_per_node=${nproc_per_node} \
+  --nnodes=${nnodes} \
+  ${TILELANG_EXTRA_TORCHRUN_ARGS} ${additional_args} $@"
+fi
 
-echo ${CMD}
+echo ${CMD} 
 ${CMD}
 
 ret=$?
