@@ -131,7 +131,7 @@ def overlapped_ag_gemm(
     B: torch.Tensor,
     rank: int,
     num_ranks: int,
-    persistent: bool = False,  # TODO: support persistent consumers
+    persistent: bool = False, 
 ) -> torch.Tensor:
     """
     Overlapped AllGather-GEMM.

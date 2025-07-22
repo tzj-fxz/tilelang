@@ -52,9 +52,8 @@ _init_logger()
 
 logger = logging.getLogger(__name__)
 
-USE_DISTRIBUTED = os.getenv("TILELANG_USE_DISTRIBUTED", "0").lower() in ("1", "true", "on")
 
-from .env import SKIP_LOADING_TILELANG_SO
+from .env import SKIP_LOADING_TILELANG_SO, USE_DISTRIBUTED
 from .env import enable_cache, disable_cache, is_cache_enabled  # noqa: F401
 
 import tvm

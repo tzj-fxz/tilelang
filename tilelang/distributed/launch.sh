@@ -1,9 +1,9 @@
 #!/bin/bash
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib:~/.local/lib/
 
-export TILELANG_USE_DISTRIBUTED=1
+export TILELANG_USE_DISTRIBUTED=1  # enable TileLang distributed mode
 export NVSHMEM_BOOTSTRAP_MPI_PLUGIN=nvshmem_bootstrap_torch.so
-export NVSHMEM_DISABLE_CUDA_VMM=1 # moving from cpp to shell
+export NVSHMEM_DISABLE_CUDA_VMM=1  # moving from cpp to shell
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 
 # set default communication env vars
@@ -29,24 +29,20 @@ export NCCL_IB_GID_INDEX=${NCCL_IB_GID_INDEX:=3}
 export NVSHMEM_IB_GID_INDEX=3
 
 # set whether to use memory check
-use_memcheck=${MEMCHECK:=0}  # set env var. `MEMCHECK` to 1 to enable memory check via compute-sanitizer
+memcheck=${MEMCHECK:=0}  # set env var. `MEMCHECK` to 1 to enable memory check via compute-sanitizer
+# This is especially useful for debugging memory issues, e.g. CUDA misalignment errors and TMA stuff.
 
-if [ ${use_memcheck} -eq 1 ]; then
-  CMD="compute-sanitizer --tool memcheck \
-  torchrun \
+CMD="torchrun \
   --node_rank=${node_rank} \
   --nproc_per_node=${nproc_per_node} \
   --nnodes=${nnodes} \
   ${TILELANG_EXTRA_TORCHRUN_ARGS} ${additional_args} $@"
-else
-  CMD="torchrun \
-  --node_rank=${node_rank} \
-  --nproc_per_node=${nproc_per_node} \
-  --nnodes=${nnodes} \
-  ${TILELANG_EXTRA_TORCHRUN_ARGS} ${additional_args} $@"
+
+if [ ${memcheck} -eq 1 ]; then
+    CMD="compute-sanitizer --tool memcheck ${CMD}"
 fi
 
-echo ${CMD} 
+echo ${CMD}
 ${CMD}
 
 ret=$?

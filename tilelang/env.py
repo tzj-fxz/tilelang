@@ -4,7 +4,6 @@ import pathlib
 import logging
 import shutil
 import glob
-from tilelang import USE_DISTRIBUTED
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +70,7 @@ TVM_PYTHON_PATH: str = os.environ.get("TVM_IMPORT_PYTHON_PATH", None)
 TVM_LIBRARY_PATH: str = os.environ.get("TVM_LIBRARY_PATH", None)
 TILELANG_TEMPLATE_PATH: str = os.environ.get("TL_TEMPLATE_PATH", None)
 TILELANG_PACKAGE_PATH: str = pathlib.Path(__file__).resolve().parents[0]
+USE_DISTRIBUTED = os.getenv("TILELANG_USE_DISTRIBUTED", "0").lower() in ("1", "true", "on")
 if USE_DISTRIBUTED:
     if os.environ.get("NVSHMEM_SRC", None) is not None:
         NVSHMEM_SRC = os.environ.get("NVSHMEM_SRC")
