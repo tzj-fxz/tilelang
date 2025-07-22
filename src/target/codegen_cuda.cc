@@ -120,7 +120,10 @@ std::string CodeGenTileLangCUDA::Finish() {
     decl_stream << "#include <math_constants.h>\n";
   }
 
-  decl_stream << "#include <tl_templates/cuda/distributed.h>\n";
+  if (use_distributed_) {
+    decl_stream << "#include <tl_templates/cuda/distributed.h>\n";
+  }
+
   if (need_cooperative_groups_) {
     decl_stream << "#include <cooperative_groups.h>\n";
   }
@@ -1293,10 +1296,13 @@ void CodeGenTileLangCUDA::VisitExpr_(const CallNode *op, std::ostream &os) {
            << ")), \"r\"((int)" << guard << ")\n";
     stream << ");\n";
   } else if (op->op.same_as(tl::GetPE())) {
+    this->use_distributed_ = true;
     os << "nvshmem_my_pe()";
   } else if (op->op.same_as(tl::GetPENum())) {
+    this->use_distributed_ = true;
     os << "nvshmem_n_pes()";
   } else if (op->op.same_as(tl::IntPE())) {
+    this->use_distributed_ = true;
     os << "nvshmem_int_p(";
     this->PrintExpr(op->args[0], os);
     os << ", ";
@@ -1305,6 +1311,7 @@ void CodeGenTileLangCUDA::VisitExpr_(const CallNode *op, std::ostream &os) {
     this->PrintExpr(op->args[2], os);
     os << ")";
   } else if (op->op.same_as(tl::PutmemNbiBlock())) {
+    this->use_distributed_ = true;
     os << "nvshmemx_putmem_nbi_block(";
     this->PrintExpr(op->args[0], os);
     os << ", ";
@@ -1315,6 +1322,7 @@ void CodeGenTileLangCUDA::VisitExpr_(const CallNode *op, std::ostream &os) {
     this->PrintExpr(op->args[3], os);
     os << ")";
   } else if (op->op.same_as(tl::PutmemSignalNbiBlock())) {
+    this->use_distributed_ = true;
     os << "nvshmemx_putmem_signal_nbi_block(";
     for (int i = 0; i < op->args.size(); i++) {
       this->PrintExpr(op->args[i], os);
@@ -1324,6 +1332,7 @@ void CodeGenTileLangCUDA::VisitExpr_(const CallNode *op, std::ostream &os) {
     }
     os << ")";
   } else if (op->op.same_as(tl::GetmemNbiBlock())) {
+    this->use_distributed_ = true;
     os << "nvshmemx_getmem_nbi_block(";
     this->PrintExpr(op->args[0], os);
     os << ", ";
@@ -1334,6 +1343,7 @@ void CodeGenTileLangCUDA::VisitExpr_(const CallNode *op, std::ostream &os) {
     this->PrintExpr(op->args[3], os);
     os << ")";
   } else if (op->op.same_as(tl::SignalWaitUntil())) {
+    this->use_distributed_ = true;
     os << "nvshmem_signal_wait_until(";
     for (int i = 0; i < op->args.size(); i++) {
       this->PrintExpr(op->args[i], os);
@@ -1343,6 +1353,7 @@ void CodeGenTileLangCUDA::VisitExpr_(const CallNode *op, std::ostream &os) {
     }
     os << ")";
   } else if (op->op.same_as(tl::SignalOp())) {
+    this->use_distributed_ = true;
     os << "nvshmemx_signal_op(";
     for (int i = 0; i < op->args.size(); i++) {
       this->PrintExpr(op->args[i], os);
@@ -1352,12 +1363,16 @@ void CodeGenTileLangCUDA::VisitExpr_(const CallNode *op, std::ostream &os) {
     }
     os << ")";
   } else if (op->op.same_as(tl::Quiet())) {
+    this->use_distributed_ = true;
     os << "nvshmem_quiet()";
   } else if (op->op.same_as(tl::Fence())) {
+    this->use_distributed_ = true;
     os << "nvshmem_fence()";
   } else if (op->op.same_as(tl::SyncAll())) {
+    this->use_distributed_ = true;
     os << "nvshmem_sync_all()";
   } else if (op->op.same_as(tl::BarrierAll())) {
+    this->use_distributed_ = true;
     os << "nvshmem_barrier_all()";
   } else {
     CodeGenC::VisitExpr_(op, os);

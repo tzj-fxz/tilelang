@@ -124,11 +124,11 @@ class LibraryGenerator(object):
         command += [
             "-I" + TILELANG_TEMPLATE_PATH,
         ]
-        command += ["-diag-suppress=20013"]
-        command += ["-rdc=true"]
         if USE_DISTRIBUTED:
             assert NVSHMEM_INCLUDE_DIR is not None, "NVSHMEM_INCLUDE_DIR is not set"
             assert NVSHMEM_LIB_PATH is not None, "NVSHMEM_LIB_PATH is not set"
+            command += ["-diag-suppress=20013"]
+            command += ["-rdc=true"]
             command += [
                 "-I" + NVSHMEM_INCLUDE_DIR, "-L" + NVSHMEM_LIB_PATH,
                 "-lnvshmem_host -lnvshmem_device"

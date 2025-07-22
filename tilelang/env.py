@@ -79,6 +79,9 @@ if USE_DISTRIBUTED:
             os.path.dirname(os.path.abspath(__file__)), "3rdparty", "nvshmem_src")
     NVSHMEM_INCLUDE_DIR: str = NVSHMEM_SRC + "/build/src/include"
     NVSHMEM_LIB_PATH: str = NVSHMEM_SRC + "/build/src/lib"
+else:
+    NVSHMEM_INCLUDE_DIR = None
+    NVSHMEM_LIB_PATH = None
 
 TILELANG_CACHE_DIR: str = os.environ.get("TILELANG_CACHE_DIR",
                                          os.path.expanduser("~/.tilelang/cache"))

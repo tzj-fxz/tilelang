@@ -35,9 +35,9 @@ extern "C" const char* get_last_error() {{
 }}
 
 extern "C" int init() {{
-    nvshmem_init();
     error_buf[0] = '\\0';
     {0}
+    return 0;
 }}
 """
 
@@ -294,8 +294,6 @@ class TLCUDASourceWrapper(object):
         if has_l2_persistent_map:
             kernel_launch_code += L2_PERSISTENT_MAP_CREATE_HANDLE
         # TODO: Pass ptr created by nvshmem_malloc and stream to kernel
-        kernel_launch_code = """"""
-        # kernel_launch_code += "\tcudaStream_t stream_;\n"
         # TODO: check the impl of TileLink
         desc_name_map: Dict[str, str] = {}
         for function_name, function_info in function_informations.items():
@@ -443,8 +441,11 @@ class TLCUDASourceWrapper(object):
             attrs = func.attrs
             dynamic_smem_buf = None
             use_cooperative_groups = False
+            if "use_cooperative_groups" in attrs:
+                use_cooperative_groups = attrs["use_cooperative_groups"]
             if "dyn_shared_memory_buf" in attrs:
                 dynamic_smem_buf = int(attrs["dyn_shared_memory_buf"])
+            if "thread_extent" in attrs:
                 # Extract block and grid sizes from thread extents
                 thread_extent = attrs["thread_extent"]
                 for tag, extent in thread_extent.items():
@@ -500,8 +501,9 @@ class TLCUDASourceWrapper(object):
                 # Format the cudaFuncSetAttribute call for dynamic shared memory
                 call_str += PREDEF_ATTRIBUTE_SET_DYNAMIC_MEMORY.format(
                     function_name, dynamic_smem_buf)
+        nvshmem_init_str = "nvshmem_init();\n\t" if self.use_nvshmem else ""
         # Format the initialization function using the call_str
-        init_funcs = PREDEF_INIT_FUNC.format(call_str)
+        init_funcs = PREDEF_INIT_FUNC.format(nvshmem_init_str + call_str)
         return init_funcs
 
     def update_lib_code(self, code: str):
