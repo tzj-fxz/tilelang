@@ -13,6 +13,7 @@ from tilelang import tvm as tvm
 from tilelang.transform import PassConfigKey
 from tilelang.contrib.nvcc import get_nvcc_compiler, get_target_compute_version
 from tilelang.contrib.rocm import find_rocm_path, get_rocm_arch
+from tilelang import USE_DISTRIBUTED
 from tilelang.env import TILELANG_TEMPLATE_PATH, NVSHMEM_INCLUDE_DIR, NVSHMEM_LIB_PATH
 
 from .utils import is_cpu_target, is_cuda_target, is_hip_target
@@ -125,7 +126,9 @@ class LibraryGenerator(object):
         ]
         command += ["-diag-suppress=20013"]
         command += ["-rdc=true"]
-        if os.environ.get("NVSHMEM_PATH", None) is not None:
+        if USE_DISTRIBUTED:
+            assert NVSHMEM_INCLUDE_DIR is not None, "NVSHMEM_INCLUDE_DIR is not set"
+            assert NVSHMEM_LIB_PATH is not None, "NVSHMEM_LIB_PATH is not set"
             command += [
                 "-I" + NVSHMEM_INCLUDE_DIR, "-L" + NVSHMEM_LIB_PATH,
                 "-lnvshmem_host -lnvshmem_device"

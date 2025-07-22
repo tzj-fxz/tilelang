@@ -4,6 +4,7 @@ import pathlib
 import logging
 import shutil
 import glob
+from tilelang import USE_DISTRIBUTED
 
 logger = logging.getLogger(__name__)
 
@@ -70,12 +71,14 @@ TVM_PYTHON_PATH: str = os.environ.get("TVM_IMPORT_PYTHON_PATH", None)
 TVM_LIBRARY_PATH: str = os.environ.get("TVM_LIBRARY_PATH", None)
 TILELANG_TEMPLATE_PATH: str = os.environ.get("TL_TEMPLATE_PATH", None)
 TILELANG_PACKAGE_PATH: str = pathlib.Path(__file__).resolve().parents[0]
-if os.environ.get("NVSHMEM_PATH", None) is not None:
-    NVSHMEM_INCLUDE_DIR: str = os.environ.get("NVSHMEM_PATH") + "/build/src/include"
-    NVSHMEM_LIB_PATH: str = os.environ.get("NVSHMEM_PATH") + "/build/src/lib"
-else:
-    NVSHMEM_INCLUDE_DIR: str = ""
-    NVSHMEM_LIB_PATH: str = ""
+if USE_DISTRIBUTED:
+    if os.environ.get("NVSHMEM_SRC", None) is not None:
+        NVSHMEM_SRC = os.environ.get("NVSHMEM_SRC")
+    else:
+        NVSHMEM_SRC = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "3rdparty", "nvshmem_src")
+    NVSHMEM_INCLUDE_DIR: str = NVSHMEM_SRC + "/build/src/include"
+    NVSHMEM_LIB_PATH: str = NVSHMEM_SRC + "/build/src/lib"
 
 TILELANG_CACHE_DIR: str = os.environ.get("TILELANG_CACHE_DIR",
                                          os.path.expanduser("~/.tilelang/cache"))

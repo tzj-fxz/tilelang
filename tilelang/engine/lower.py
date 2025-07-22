@@ -15,7 +15,7 @@ from tilelang.engine.phase import (
     LowerAndLegalize,
     OptimizeForTarget,
 )
-from tilelang import use_distributed
+from tilelang import USE_DISTRIBUTED
 
 
 def is_cpu_device_backend(target: Target):
@@ -63,9 +63,12 @@ def tilelang_callback_cuda_compile(code, target):
         cutlass_path = os.environ["TL_CUTLASS_PATH"]
     else:
         cutlass_path = osp.abspath(osp.join(project_root, "3rdparty/cutlass/include"))
-    if os.environ.get("NVSHMEM_PATH", None) is not None and use_distributed:
-        nvshmem_include_path = os.environ["NVSHMEM_PATH"] + "/build/src/include"
-        nvshmem_lib_path = os.environ["NVSHMEM_PATH"] + "/build/src/lib"
+    if USE_DISTRIBUTED:
+        if os.environ.get("NVSHMEM_SRC", None) is not None:
+            nvshmem_include_path = os.environ["NVSHMEM_SRC"] + "/build/src/include"
+            nvshmem_lib_path = os.environ["NVSHMEM_SRC"] + "/build/src/lib"
+        else:
+            raise ValueError("NVSHMEM_SRC is not set")
     compute_version = "".join(nvcc.get_target_compute_version(target).split("."))
 
     # special handle for Hopper
@@ -85,13 +88,16 @@ def tilelang_callback_cuda_compile(code, target):
         "-I" + tl_template_path,
         "-I" + cutlass_path,
     ]
-    if os.environ.get("NVSHMEM_PATH", None) is not None and use_distributed:
-        options += [
-            "-I" + nvshmem_include_path,
-            "-L" + nvshmem_lib_path,
-            "-lnvshmem_host -lnvshmem_device"
-            "-rdc=true",
-        ]
+    if USE_DISTRIBUTED:
+        if os.environ.get("NVSHMEM_SRC", None) is not None:
+            options += [
+                "-I" + nvshmem_include_path,
+                "-L" + nvshmem_lib_path,
+                "-lnvshmem_host -lnvshmem_device"
+                "-rdc=true",
+            ]
+        else:
+            raise ValueError("NVSHMEM_SRC is not set")
     ptx = nvcc.compile_cuda(
         code,
         format,

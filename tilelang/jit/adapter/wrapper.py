@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from tilelang import tvm as tvm
-from tilelang import use_distributed
+from tilelang import USE_DISTRIBUTED
 from typing import Optional, List, Dict, Union, Any
 from tvm import IRModule
 from tvm.target import Target
@@ -106,8 +106,6 @@ TMA_DESC_INIT_FUNC = """
 \t}}
 """
 
-CPENGINE_DESC_INIT_FUNC = """
-\t// CUresult {0}_result = CUTLASS_CUDA_DRIVER_WRAPPER_CALL(cuMemcpyDtoDAsync)();
 TMA_DESC_INIT_FUNC_PY = """
 \t{0}_type = cuda.bindings.driver.CUtensorMapDataType({1})
 \t{0}_tensorRank = {2}
@@ -221,7 +219,7 @@ class TLCUDASourceWrapper(object):
         self.block_info: Union[List[int], Dict] = [1, 1, 1]
         self.grid_info: Union[List[int], Dict] = [1, 1, 1]
         self.tma_descriptor_args: Optional[Dict] = None
-        self.use_nvshmem = use_distributed
+        self.use_nvshmem = USE_DISTRIBUTED
         self.l2_persistent_map: Optional[Dict[str, Dict]] = {}
         self.parse_source_information()
         self.srcpath: Optional[str] = None
@@ -299,8 +297,6 @@ class TLCUDASourceWrapper(object):
         kernel_launch_code = """"""
         # kernel_launch_code += "\tcudaStream_t stream_;\n"
         # TODO: check the impl of TileLink
-        if self.use_nvshmem:
-            kernel_launch_code += "\tint mype_node;\n"
         desc_name_map: Dict[str, str] = {}
         for function_name, function_info in function_informations.items():
             block_info = function_info["block_info"]

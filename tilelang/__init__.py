@@ -5,8 +5,6 @@ import ctypes
 import logging
 from tqdm import tqdm
 
-use_distributed = True
-
 class TqdmLoggingHandler(logging.Handler):
     """Custom logging handler that directs log output to tqdm progress bar to avoid interference."""
 
@@ -53,6 +51,8 @@ def _init_logger():
 _init_logger()
 
 logger = logging.getLogger(__name__)
+
+USE_DISTRIBUTED = os.getenv("TILELANG_USE_DISTRIBUTED", "0").lower() in ("1", "true", "on")
 
 from .env import SKIP_LOADING_TILELANG_SO
 from .env import enable_cache, disable_cache, is_cache_enabled  # noqa: F401

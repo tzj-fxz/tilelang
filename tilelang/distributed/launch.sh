@@ -1,6 +1,7 @@
 #!/bin/bash
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib:~/.local/lib/
 
+export TILELANG_USE_DISTRIBUTED=1
 export NVSHMEM_BOOTSTRAP_MPI_PLUGIN=nvshmem_bootstrap_torch.so
 export NVSHMEM_DISABLE_CUDA_VMM=1 # moving from cpp to shell
 export CUDA_DEVICE_MAX_CONNECTIONS=1
