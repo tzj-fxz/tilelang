@@ -173,9 +173,15 @@ def signal_op(sig_addr, signal, sig_op, pe):
     return tir.call_intrin("handle", tir.op.Op.get("tl.SignalOp"), sig_addr, signal, sig_op, pe)
 
 
-def signal_wait_until(*args):
-    #TODO: handle return value(which is uint*64)?
-    return tir.call_intrin("int32", tir.op.Op.get("tl.SignalWaitUntil"), *args)
+def signal_wait_until(sig_addr, cmp, cmp_val):
+    """Waits until the signal at `sig_addr` reaches the specified `signal` value on the specified PE.
+    Args:
+        sig_addr (uint64_t*): Symmetric address of the signal word to be waited on.
+        cmp: The comparison operation to be performed on the signal value.
+        cmp_val (uint64_t): The value to compare against the signal value.
+    """
+    #TODO: handle return value(which is uint64_t*)?
+    return tir.call_intrin("handle", tir.op.Op.get("tl.SignalWaitUntil"), sig_addr, cmp, cmp_val)
 
 
 def broadcast(*args):

@@ -1,7 +1,8 @@
 import sys
-
 import torch
 import torch.distributed
+from cuda import cuda, cudart
+from typing import Optional
 
 try:
     from _pynvshmem import *  # noqa: F403
@@ -13,6 +14,17 @@ except Exception as e:
     )
     raise e
 
+
+def _CUDA_CHECK(err):
+    if isinstance(err, cuda.CUresult):
+        if err != cuda.CUresult.CUDA_SUCCESS:
+            raise RuntimeError(f"Cuda Error: {err}: {cuda.cuGetErrorName(err)}")
+    elif isinstance(err, cudart.cudaError_t):
+        if err != cudart.cudaError_t.cudaSuccess:
+            raise RuntimeError(f"Cuda Error: {err}: {cudart.cudaGetErrorString(err)}")
+    else:
+        raise RuntimeError(f"Unknown error type: {err}")
+    
 
 def broadcast_cpu(tensor: torch.Tensor, src: int, group: torch.distributed.ProcessGroup):
     if not tensor.is_cuda:
@@ -38,6 +50,60 @@ def init_nvshmem_by_uniqueid(group: torch.distributed.ProcessGroup):
     nvshmemx_init_attr_with_uniqueid(rank, nranks, unique_id)  # noqa: F405
     nvshmem_barrier_all()
     torch.cuda.synchronize()
+    
+
+"""Host-side signaling functions."""
+
+def write_i32(
+    tensor: torch.Tensor, 
+    value: int,
+    ag_stream: Optional[torch.cuda.Stream] = None
+):
+    """Atomic write an int32 value to a tensor.
+    Args:
+        tensor (torch.Tensor): The tensor to write to, must be of dtype torch.int32.
+        value (int): The value to write.
+        ag_stream (Optional[torch.cuda.Stream]): The CUDA stream to use for the operation.
+            If None, the current stream will be used.
+    """
+    assert isinstance(tensor, torch.Tensor) and tensor.dtype == torch.int32, \
+        f"tensor must be a torch.Tensor with dtype torch.int32, but got {tensor.dtype}"
+    assert tensor.numel() == 1, "tensor must have exactly one element"
+    if ag_stream is None:
+        ag_stream = torch.cuda.current_stream()
+    (err, ) = cuda.cuStreamWriteValue32(
+            ag_stream.cuda_stream,
+            tensor.data_ptr(),
+            value,
+            cuda.CUstreamWriteValue_flags.CU_STREAM_WRITE_VALUE_DEFAULT,
+        )
+    _CUDA_CHECK(err)
+
+
+def write_u64(
+    tensor: torch.Tensor, 
+    value: int,
+    ag_stream: Optional[torch.cuda.Stream] = None
+):
+    """Atomic write an uint64 value to a tensor.
+    Args:
+        tensor (torch.Tensor): The tensor to write to, must be of dtype torch.uint64.
+        value (int): The value to write.
+        ag_stream (Optional[torch.cuda.Stream]): The CUDA stream to use for the operation.
+            If None, the current stream will be used.
+    """
+    assert isinstance(tensor, torch.Tensor) and tensor.dtype == torch.uint64, \
+        f"tensor must be a torch.Tensor with dtype torch.uint64, but got {tensor.dtype}"
+    assert tensor.numel() == 1, "tensor must have exactly one element"
+    if ag_stream is None:
+        ag_stream = torch.cuda.current_stream()
+    (err, ) = cuda.cuStreamWriteValue64(
+            ag_stream.cuda_stream,
+            tensor.data_ptr(),
+            value,
+            cuda.CUstreamWriteValue_flags.CU_STREAM_WRITE_VALUE_DEFAULT,
+        )
+    _CUDA_CHECK(err)
 
 
 # team node

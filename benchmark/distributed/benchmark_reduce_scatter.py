@@ -21,7 +21,7 @@ tilelang.disable_cache()
 
 '''
 Note: Minor numerical differences exist between Triton/TileLang and Torch (~1e-2) 
-due to the way reductions are handled in different implementations.
+due to the order reductions are handled in different implementations.
 (No error when #PE = 2)
 '''
 
@@ -75,8 +75,9 @@ def parse_args():
 
 
 if __name__ == '__main__':
+    assert torch.cuda.get_device_capability()[0] >= 9, '❗This benchmark requires sm_90 or higher'
+    
     WORLD_SIZE, RANK, LOCAL_RANK, TP_GROUP = init_distributed(return_tp_group=True)
-    torch.cuda.set_device(RANK)
     assert WORLD_SIZE <= 8, "This benchmark is designed for intra-node RS"
 
     args = parse_args()
@@ -139,7 +140,7 @@ if __name__ == '__main__':
         rs_buffer = pynvshmem.nvshmem_create_tensor([M, N], torch_dtype)
         rs_buffer.copy_(local_data)
         out = pynvshmem.nvshmem_create_tensor([M_per_rank, N], torch_dtype)
-        kernel(rs_buffer, out) # Since we use pull, we don't need sync after kernel
+        kernel(rs_buffer, out) 
         return out
 
     dist.barrier(TP_GROUP)
@@ -148,7 +149,6 @@ if __name__ == '__main__':
 
     # Check correctness
     assert torch.allclose(tl_out, torch_out, atol=1e-2, rtol=1e-2), f'max error: {(tt_out - torch_out).abs().max()}'
-    print(f'max err: {(tt_out - torch_out).abs().max()}')
     print(f"rank {RANK} check passed.✅")
 
     dist.destroy_process_group()

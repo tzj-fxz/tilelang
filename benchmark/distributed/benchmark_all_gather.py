@@ -147,7 +147,7 @@ if __name__ == '__main__':
     # Tested on 4A100 with full-mesh NVLink, comparable with Triton-dist and ~20x faster than Torch
 
     # Check correctness
-    assert torch.allclose(tt_out, torch_out, atol=0, rtol=0), f'max error: {(tt_out - torch_out).abs().max()}'
+    assert torch.allclose(tl_out, torch_out, atol=0, rtol=0), f'max error: {(tl_out - torch_out).abs().max()}'
     print(f"rank {RANK} check passed.✅")
     
     dist.destroy_process_group()
