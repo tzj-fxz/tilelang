@@ -18,20 +18,14 @@ import fla
 print(fla.__file__, flush=True)
 
 from fla.ops.common.chunk_delta_h import chunk_gated_delta_rule_bwd_dhu
+from fla.ops.utils.cumsum import chunk_local_cumsum
 import torch
+import torch.nn.functional as F
 import math
 torch.random.manual_seed(0)
 # torch.set_printoptions(profile="full")
 
 tilelang.disable_cache()
-
-
-def l2_norm(x):
-    norm_size = 128
-    BD = x.shape[-1] // norm_size
-    for i_d in range(BD):
-        x[:, :, :, i_d * norm_size:(i_d + 1) * norm_size] = x[:, :, :, i_d * norm_size:(i_d + 1) * norm_size] / torch.norm(x[:, :, :, i_d * norm_size:(i_d + 1) * norm_size], dim=-1, keepdim=True)
-    return x
 
 
 def prepare_input(
@@ -47,14 +41,18 @@ def prepare_input(
     gate_dtype,
     state_dtype,
 ):
-    Q = l2_norm(torch.randn(B, S, H, DK, dtype=input_dtype).cuda())
-    K = l2_norm(torch.randn(B, S, H, DK, dtype=input_dtype).cuda())
-    W = l2_norm(torch.randn(B, S, H, DK, dtype=input_dtype).cuda())
+    Q = torch.randn(B, S, H, DK, dtype=input_dtype).cuda()
+    K = torch.randn(B, S, H, DK, dtype=input_dtype).cuda()
+    K = F.normalize(K, dim=-1, p=2)
+    W = torch.randn(B, S, H, DK, dtype=input_dtype).cuda()
+    # Note: G should be in logspace and do chunkwise cumsum
     G = torch.randn(B, S, H, dtype=gate_dtype).cuda()
-    h0 = l2_norm(torch.randn(B, H, DK, DV, dtype=input_dtype).cuda())
-    dht = l2_norm(torch.randn(B, H, DK, DV, dtype=input_dtype).cuda())
-    dO = l2_norm(torch.randn(B, S, H, DV, dtype=input_dtype).cuda())
-    dv = l2_norm(torch.randn(B, S, H, DV, dtype=input_dtype).cuda())
+    G = F.logsigmoid(G)
+    G = chunk_local_cumsum(G, chunk_size)
+    h0 = torch.randn(B, H, DK, DV, dtype=input_dtype).cuda()
+    dht = torch.randn(B, H, DK, DV, dtype=input_dtype).cuda()
+    dO = torch.randn(B, S, H, DV, dtype=input_dtype).cuda()
+    dv = torch.randn(B, S, H, DV, dtype=input_dtype).cuda()
     return Q, K, W, G, h0, dht, dO, dv
 
 
@@ -230,14 +228,11 @@ def tilelang_chunk_gated_delta_rule_bwd_dhu(
             dO_shared_t = T.alloc_shared((block_DV, block_S), dtype="float32")
             dO_fragment = T.alloc_fragment((block_S, block_DV), dtype="float32")
             dO_fragment_t = T.alloc_fragment((block_DV, block_S), dtype="float32")
-            # dO_shared_t = T.alloc_shared((block_S, block_DV), dtype="float32")
             K_shared = T.alloc_shared((block_S, DK), dtype=input_dtype)
 
             Q_shared = T.alloc_shared((block_S, DK), dtype=input_dtype)
             Q_shared_fp32 = T.alloc_shared((block_S, DK), dtype="float32")
             W_shared = T.alloc_shared((block_S, DK), dtype=input_dtype)
-            Q_shared_t = T.alloc_shared((DK, block_S), dtype=input_dtype)
-            Q_shared_t_fp32 = T.alloc_shared((DK, block_S), dtype="float32")
 
             G_last_local = T.alloc_local((1), dtype=gate_dtype)
             G_last_local_exp = T.alloc_local((1), dtype=gate_dtype)
@@ -282,10 +277,6 @@ def tilelang_chunk_gated_delta_rule_bwd_dhu(
                 T.gemm(K_shared, b_dh_shared, dv_fragment, clear_accum=True)
 
                 if use_g:
-                    # G_last_local[0] = G[bb, i_s_inv * block_S + block_S - 1, bh]
-                    # G_last_local_exp[0] = T.exp(G_last_local[0])
-                    # for i_s2 in T.Parallel(block_S):
-                    #     G_shared[i_s2] = G[bb, i_s_inv * block_S + i_s2, bh]
                     T.copy(G[bb, i_s_inv * block_S:(i_s_inv + 1) * block_S, bh], G_shared, disable_tma=True)
                     T.copy(G_shared, G_fragment)
                     G_last_local[0] = G_shared[block_S - 1]
@@ -296,8 +287,6 @@ def tilelang_chunk_gated_delta_rule_bwd_dhu(
                         # with T.If(G_last_local[0] - G_shared[i_s2] <= 0):
                         with T.If(G_last_local[0] - G_fragment[i_s2] <= 0):
                             with T.Then():
-                                # dv_fragment[i_s2, i_v] = dv_fragment[i_s2, i_v] * T.exp(G_last_local[0] - G_shared[i_s2])
-                                # dv_fragment[i_s2, i_v] = dv_fragment[i_s2, i_v] * T.exp(G_last_local[0] - G_fragment[i_s2])
                                 dv_fragment[i_s2, i_v] = dv_fragment[i_s2, i_v] * G_fragment_post[i_s2]
                             with T.Else():
                                 dv_fragment[i_s2, i_v] = 0
@@ -372,27 +361,27 @@ def test_result(dh_0, dh0_0, dv2_0, dh_1, dh0_1, dv2_1, name):
         print(f"{name} dv2_0 and dv2_1 are not close for {name}")
         print(e, end="\n\n")
 
-    # close = torch.isclose(dh_0, dh_1, rtol=1e-2, atol=1e-2)
-    # mismatch_indices = torch.nonzero(~close, as_tuple=True)
-    # error_num = 0
-    # for indices in zip(*mismatch_indices):
-    #     if error_num < 100:
-    #         print(f"{name} dh_0[{[idx.item() for idx in indices]}] = {dh_0[indices[0].item(), indices[1].item(), indices[2].item(), indices[3].item(), indices[4].item()]}, dh_1[{[idx.item() for idx in indices]}] = {dh_1[indices[0].item(), indices[1].item(), indices[2].item(), indices[3].item(), indices[4].item()]}")
-    #         error_num += 1
-    # close = torch.isclose(dh0_0, dh0_1, rtol=1e-2, atol=1e-2)
-    # mismatch_indices = torch.nonzero(~close, as_tuple=True)
-    # error_num = 0
-    # for indices in zip(*mismatch_indices):
-    #     if error_num < 100:
-    #         print(f"{name} dh0_0[{[idx.item() for idx in indices]}] = {dh0_0[indices[0].item(), indices[1].item(), indices[2].item(), indices[3].item()]}, dh0_1[{[idx.item() for idx in indices]}] = {dh0_1[indices[0].item(), indices[1].item(), indices[2].item(), indices[3].item()]}")
-    #         error_num += 1
-    # close = torch.isclose(dv2_0, dv2_1, rtol=1e-2, atol=1e-2)
-    # mismatch_indices = torch.nonzero(~close, as_tuple=True)
-    # error_num = 0
-    # for indices in zip(*mismatch_indices):
-    #     if error_num < 100:
-    #         print(f"{name} dv2_0[{[idx.item() for idx in indices]}] = {dv2_0[indices[0].item(), indices[1].item(), indices[2].item(), indices[3].item()]}, dv2_1[{[idx.item() for idx in indices]}] = {dv2_1[indices[0].item(), indices[1].item(), indices[2].item(), indices[3].item()]}")
-    #         error_num += 1
+    close = torch.isclose(dh_0, dh_1, rtol=1e-2, atol=1e-2)
+    mismatch_indices = torch.nonzero(~close, as_tuple=True)
+    error_num = 0
+    for indices in zip(*mismatch_indices):
+        if error_num < 100:
+            print(f"{name} dh_0[{[idx.item() for idx in indices]}] = {dh_0[indices[0].item(), indices[1].item(), indices[2].item(), indices[3].item(), indices[4].item()]}, dh_1[{[idx.item() for idx in indices]}] = {dh_1[indices[0].item(), indices[1].item(), indices[2].item(), indices[3].item(), indices[4].item()]}")
+            error_num += 1
+    close = torch.isclose(dh0_0, dh0_1, rtol=1e-2, atol=1e-2)
+    mismatch_indices = torch.nonzero(~close, as_tuple=True)
+    error_num = 0
+    for indices in zip(*mismatch_indices):
+        if error_num < 100:
+            print(f"{name} dh0_0[{[idx.item() for idx in indices]}] = {dh0_0[indices[0].item(), indices[1].item(), indices[2].item(), indices[3].item()]}, dh0_1[{[idx.item() for idx in indices]}] = {dh0_1[indices[0].item(), indices[1].item(), indices[2].item(), indices[3].item()]}")
+            error_num += 1
+    close = torch.isclose(dv2_0, dv2_1, rtol=1e-2, atol=1e-2)
+    mismatch_indices = torch.nonzero(~close, as_tuple=True)
+    error_num = 0
+    for indices in zip(*mismatch_indices):
+        if error_num < 100:
+            print(f"{name} dv2_0[{[idx.item() for idx in indices]}] = {dv2_0[indices[0].item(), indices[1].item(), indices[2].item(), indices[3].item()]}, dv2_1[{[idx.item() for idx in indices]}] = {dv2_1[indices[0].item(), indices[1].item(), indices[2].item(), indices[3].item()]}")
+            error_num += 1
 
 
 def run_test(
@@ -433,8 +422,9 @@ def run_test(
             Q, K, W, G, h0, dht, dO, dv, scale
         )
     else:
+        G = G.fill_(0)
         dh_ref, dh0_ref, dv2_ref = chunk_gated_delta_rule_bwd_dhu(
-            Q, K, W, None, h0, dht, dO, dv, scale
+            Q, K, W, G, h0, dht, dO, dv, scale
         )
 
     # tilelang
