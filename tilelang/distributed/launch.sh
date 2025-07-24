@@ -20,7 +20,7 @@ nnodes=${NODES:=1}  # set env var. `NODES` to # of nodes
 node_rank=${NODE_RANK:=0}  # set env var. `NODE_RANK` to the rank of current node
 
 master_addr="127.0.0.1"
-master_port="23456"
+master_port="$(( RANDOM % 100 + 23400 ))"  # randomly choose a port between 23400 and 23499
 additional_args="--rdzv_endpoint=${master_addr}:${master_port}"
 IB_HCA=mlx5
 

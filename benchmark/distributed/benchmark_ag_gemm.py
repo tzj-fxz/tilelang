@@ -1,8 +1,3 @@
-# Copyright (c) Tile-AI Corporation.
-# Licensed under the MIT License.
-
-### This benchmark introduces overlapping intra-node AllGather and GEMM. ###
-
 '''Bugfix first:
 Triton-distributed/python/triton_dist/kernels/nvidia/allgather_gemm.py:566
 ```python
@@ -37,7 +32,8 @@ tilelang.disable_cache()
 
 @tilelang.jit(
     out_idx=-1,
-    pass_configs={"tl.disable_tma_lower": True}  #FIXME: TMA loading A, B results in misaligned addr.?
+    pass_configs={"tl.disable_rdc": True}  
+    #FIXME: https://github.com/tile-ai/tilelang/issues/659
 )
 def matmut_transpose(
     rank, 
@@ -51,7 +47,7 @@ def matmut_transpose(
     dtype="float16",
     threads=128,
     persistent=False
-) -> Callable:
+) -> tilelang.JITKernel:
     accum_dtype = "float32"
     signal_dtype = "uint64"  # NVSHMEM requires uint64 for signal
     
@@ -72,6 +68,7 @@ def matmut_transpose(
             A_shared = T.alloc_shared((block_M, block_K), dtype)
             B_shared = T.alloc_shared((block_N, block_K), dtype)
             C_local = T.alloc_fragment((block_M, block_N), accum_dtype)
+            C_shared = T.alloc_shared((block_M, block_N), dtype)
             
             # thread-block swizzle for allgather
             T.use_swizzle(10, order="column")
@@ -88,7 +85,8 @@ def matmut_transpose(
                 T.copy(B[by * block_N, k * block_K], B_shared)
                 T.gemm(A_shared, B_shared, C_local, transpose_B=True)
                 
-            T.copy(C_local, C[bx * block_M, by * block_N])
+            T.copy(C_local, C_shared)
+            T.copy(C_shared, C[bx * block_M, by * block_N])
             
     
     @T.prim_func
@@ -102,6 +100,7 @@ def matmut_transpose(
             A_shared = T.alloc_shared((block_M, block_K), dtype)
             B_shared = T.alloc_shared((block_N, block_K), dtype)
             C_local = T.alloc_fragment((block_M, block_N), accum_dtype)
+            C_shared = T.alloc_shared((block_M, block_N), dtype)
             
             for bx, by in T.Persistent(
                 [M_blocks, N_blocks], sm_num, block_id
@@ -121,7 +120,8 @@ def matmut_transpose(
                     T.copy(B[by * block_N, k * block_K], B_shared)
                     T.gemm(A_shared, B_shared, C_local, transpose_B=True)
                 
-                T.copy(C_local, C[bx * block_M, by * block_N])
+                T.copy(C_local, C_shared)
+                T.copy(C_shared, C[bx * block_M, by * block_N])
             
     return persistent_kernel if persistent else nonpersistent_kernel
 
@@ -164,6 +164,10 @@ def overlapped_ag_gemm(
         threads=threads,
         persistent=persistent
     )
+    if RANK == 0 and args.print_source:
+        print('We currently use cp-engine for producer, print consumer kernel code only...')
+        print(consumer.get_kernel_source())
+    
     ag_buffer = pynvshmem.nvshmem_create_tensor_list_intra_node(
         shape=[M, K],
         dtype=A.dtype,
@@ -220,6 +224,7 @@ def parse_args():
         "--dtype", type=str, default="float16", choices=["float16", "float32", "bfloat16"])
     parser.add_argument("--threads", type=int, default=128, help="number of threads in a block")
     parser.add_argument("--persistent", action='store_true', default=False, help="use persistent GEMM consumers")
+    parser.add_argument("--print_source", action="store_true", help="print kernel source code")
     parser.add_argument("--warmup", type=int, default=5, help="number of warmup iterations")
     parser.add_argument("--repeat", type=int, default=10, help="number of repeat iterations")
     return parser.parse_args()

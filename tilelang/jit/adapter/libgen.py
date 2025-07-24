@@ -56,6 +56,8 @@ class LibraryGenerator(object):
         return ctypes.CDLL(lib_path)
 
     def compile_lib(self, timeout: float = None):
+        disable_rdc = self.pass_configs.get(PassConfigKey.TL_DISABLE_RDC, False)
+        
         target = self.target
         if is_cuda_target(target):
             from tilelang.env import CUTLASS_INCLUDE_DIR
@@ -68,7 +70,7 @@ class LibraryGenerator(object):
             disable_fast_math = self.pass_configs.get(PassConfigKey.TL_DISABLE_FAST_MATH, False)
             verbose_ptxas_output = self.pass_configs.get(
                 PassConfigKey.TL_ENABLE_PTXAS_VERBOSE_OUTPUT, False)
-
+            
             command = [
                 get_nvcc_compiler(),
                 "-std=c++17",
@@ -128,7 +130,8 @@ class LibraryGenerator(object):
             assert NVSHMEM_INCLUDE_DIR is not None, "NVSHMEM_INCLUDE_DIR is not set"
             assert NVSHMEM_LIB_PATH is not None, "NVSHMEM_LIB_PATH is not set"
             command += ["-diag-suppress=20013"]
-            command += ["-rdc=true"]
+            if not disable_rdc:
+                command += ["-rdc=true"]
             command += [
                 "-I" + NVSHMEM_INCLUDE_DIR, "-L" + NVSHMEM_LIB_PATH,
                 "-lnvshmem_host -lnvshmem_device"
