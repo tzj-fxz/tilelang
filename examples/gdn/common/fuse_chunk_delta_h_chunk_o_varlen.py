@@ -173,6 +173,7 @@ def tilelang_chunk_gated_delta_rule_chunk_o_fwd_varlen(
         cu_seqlens: T.Tensor((seq_num + 1), dtype="int32"),
         seqlens: T.Tensor((seq_num), dtype="int32"),
         chunk_num_list_cumsum: T.Tensor((seq_num), dtype="int32"),
+        chunk_size_list: T.Tensor((chunk_num_global), dtype="int32"),
         # intermediate
         h: T.Tensor(h_shape, dtype=output_dtype),
         # output
@@ -181,6 +182,8 @@ def tilelang_chunk_gated_delta_rule_chunk_o_fwd_varlen(
         O: T.Tensor(O_shape, dtype=output_dtype),
     ):
         with T.Kernel(T.ceildiv(DV, block_DV), H, seq_num, threads=threads) as (bv, bh, bs):
+            t = T.get_thread_binding(0)
+
             Q_shared = T.alloc_shared((block_S, DK), dtype=input_dtype)
             A_shared = T.alloc_shared((block_S, block_S), dtype=input_dtype)
             O_shared = T.alloc_shared((block_S, block_DV), dtype=output_dtype)
@@ -207,11 +210,8 @@ def tilelang_chunk_gated_delta_rule_chunk_o_fwd_varlen(
             seq_end = T.alloc_local((1), dtype="int32")
             chunk_num = T.alloc_local((1), dtype="int32")
             chunk_id_offset = T.alloc_local((1), dtype="int32")
-            # chunk_start = T.alloc_local((1), dtype="int32")
-            # chunk_end = T.alloc_local((1), dtype="int32")
+            chunk_end = T.alloc_local((1), dtype="int32")
             chunk_id_global = T.alloc_local((1), dtype="int32")
-
-            # T.no_set_max_nreg()
 
             T.annotate_layout({
                 b_h_shared: tilelang.layout.make_swizzled_layout(b_h_shared),
@@ -219,10 +219,8 @@ def tilelang_chunk_gated_delta_rule_chunk_o_fwd_varlen(
                 W_shared: tilelang.layout.make_swizzled_layout(W_shared),
                 V_new_shared: tilelang.layout.make_swizzled_layout(V_new_shared),
                 K_shared: tilelang.layout.make_swizzled_layout(K_shared),
-                # G_shared: tilelang.layout.make_swizzled_layout(G_shared),
                 A_shared: tilelang.layout.make_swizzled_layout(A_shared),
                 O_shared: tilelang.layout.make_swizzled_layout(O_shared),
-                # G_diff_local: T.Fragment(G_diff_local.shape, forward_thread_fn=lambda i: i // 16 * 32 + i % 8 * 4),
             })
 
             # current seqlen = seqlens[bs]
@@ -249,26 +247,24 @@ def tilelang_chunk_gated_delta_rule_chunk_o_fwd_varlen(
                 # current chunk_id_global = chunk_id_offset + i_s
 
                 chunk_start = seq_start[0] + i_s * block_S
-                chunk_end = seq_start[0] + (i_s + 1) * block_S
+                chunk_end[0] = seq_start[0] + (i_s + 1) * block_S
+                with T.If(i_s == chunk_num[0] - 1):
+                    with T.Then():
+                        chunk_end[0] = seq_end[0]
                 cur_block_S = block_S
-                if chunk_end > seq_end[0]:
-                    chunk_end = seq_end[0]
-                    cur_block_S = chunk_end - chunk_start
                 chunk_id_global = chunk_id_offset[0] + i_s
 
                 # Store previous result to the hidden tensor, like the epilogue
                 T.copy(b_h_shared, h[0, chunk_id_global, bh, 0:DK, bv * block_DV:(bv + 1) * block_DV])
 
-                # Cast the intermediate result to input dtype
-                # T.copy(b_h, b_h_input_dtype)
-
                 # Recurrence
-                # T.clear(V_new_fragment)
+                # T.copy(W[0, chunk_start:chunk_start + cur_block_S, bh, :], W_shared)
                 for i_s2, i_k in T.Parallel(cur_block_S, DK):
                     W_shared[i_s2, i_k] = W[0, chunk_start + i_s2, bh, i_k]
                 T.gemm(W_shared, b_h_shared, V_new_fragment, clear_accum=True)
 
                 # U - W * S
+                # T.copy(U[0, chunk_start:chunk_start + cur_block_S, bh, bv * block_DV:(bv + 1) * block_DV], U_shared)
                 for i_s2, i_v in T.Parallel(cur_block_S, block_DV):
                     U_shared[i_s2, i_v] = U[0, chunk_start + i_s2, bh, bv * block_DV + i_v]
                 T.copy(U_shared, U_fragment)
@@ -278,14 +274,16 @@ def tilelang_chunk_gated_delta_rule_chunk_o_fwd_varlen(
                 # Save V_new
                 if save_new_value:
                     T.copy(V_new_fragment, V_shared)
+                    # T.copy(V_shared, V_new[0, chunk_start:chunk_start + cur_block_S, bh, bv * block_DV:(bv + 1) * block_DV])
                     for i_s2, i_v in T.Parallel(cur_block_S, block_DV):
                         V_new[0, chunk_start + i_s2, bh, bv * block_DV + i_v] = V_shared[i_s2, i_v]
 
+                # T.copy(K[0, chunk_start:chunk_start + cur_block_S, bh, :], K_shared)
                 for i_s2, i_k in T.Parallel(cur_block_S, DK):
                     K_shared[i_s2, i_k] = K[0, chunk_start + i_s2, bh, i_k]
                 # use_g
                 if use_g:
-                    G_last_local[0] = G[0, chunk_end - 1, bh]
+                    G_last_local[0] = G[0, chunk_end[0] - 1, bh]
                     for i_s2, i_v in T.Parallel(cur_block_S, block_DV):
                         G_shared[i_s2, i_v] = G[0, chunk_start + i_s2, bh]
                     T.copy(G_shared, G_fragment)
@@ -302,9 +300,6 @@ def tilelang_chunk_gated_delta_rule_chunk_o_fwd_varlen(
                     G_last_local[0] = T.exp(G_last_local[0])
                     for i_k, i_v in T.Parallel(DK, block_DV):
                         b_h_fragment[i_k, i_v] *= G_last_local[0]
-                        # b_h_shared[i_k, i_v] *= G_last_local[0]
-
-                    # T.copy(b_h_shared, b_h_fragment)
 
                 # Update intermediate results
                 T.copy(V_new_fragment, V_new_shared)
@@ -312,6 +307,7 @@ def tilelang_chunk_gated_delta_rule_chunk_o_fwd_varlen(
 
                 T.clear(A_fragment)
                 T.clear(O_fragment)
+                # T.copy(Q[0, chunk_start:chunk_start + cur_block_S, bh, :], Q_shared)
                 for i_s2, i_k in T.Parallel(cur_block_S, DK):
                     Q_shared[i_s2, i_k] = Q[0, chunk_start + i_s2, bh, i_k]
                 T.gemm(Q_shared, b_h_shared, O_fragment)
@@ -346,7 +342,8 @@ def tilelang_chunk_gated_delta_rule_chunk_o_fwd_varlen(
 
                 T.copy(O_fragment, O_shared)
                 for i_s2, i_v in T.Parallel(cur_block_S, block_DV):
-                    O[0, chunk_start + i_s2, bh, bv * block_DV + i_v] = O_shared[i_s2, i_v]
+                    if chunk_start + i_s2 < chunk_end[0]:
+                        O[0, chunk_start + i_s2, bh, bv * block_DV + i_v] = O_shared[i_s2, i_v]
 
             # Save final state
             if store_final_state:
@@ -410,8 +407,10 @@ def run_test(
     Q, K, W, U, G, initial_state = prepare_input(
         B, S, H, DK, DV, chunk_size, getattr(torch, input_dtype), getattr(torch, output_dtype), getattr(torch, accum_dtype), getattr(torch, gate_dtype)
     )
+    # suppose S = 32k
+    # cu_seqlens = torch.LongTensor([0, S//4 - 1, 2*S//4 + 1, 3*S//4 - 1, S]).cuda().to(torch.int32)
     # cu_seqlens = torch.LongTensor([0, S//4, 2*S//4, 3*S//4, S]).cuda().to(torch.int32)
-    # cu_seqlens = torch.LongTensor([0, S//2, S]).cuda().to(torch.int32)
+    # cu_seqlens = torch.LongTensor([0, S//2 + 1, S]).cuda().to(torch.int32)
     cu_seqlens = torch.LongTensor([0, S]).cuda().to(torch.int32)
     seqlens = cu_seqlens[1:] - cu_seqlens[:-1]
     total_seqlen = cu_seqlens[-1]
@@ -423,8 +422,7 @@ def run_test(
         W = W.view(1, -1, H, DK)
         U = U.view(1, -1, H, DV)
         G = G.view(1, -1, H)
-        # initial_state = torch.empty(len(seqlens), H, DK, DV, dtype=getattr(torch, input_dtype)).cuda().normal_(-0.1, 0.1)
-        initial_state = torch.ones(len(seqlens), H, DK, DV, dtype=getattr(torch, input_dtype)).cuda()
+        initial_state = torch.ones(len(seqlens), H, DK, DV, dtype=getattr(torch, input_dtype)).cuda().normal_(-0.1, 0.1)
 
     # fla ref
     if use_g:
@@ -433,7 +431,8 @@ def run_test(
         o_ref, final_state_ref = ref_program(Q, K, W, U, None, initial_state, output_final_state=True, cu_seqlens=cu_seqlens, scale=scale)
 
     # calculate the total chunk number of cu_seqlens
-    chunk_num_list = torch.LongTensor([seq_len // chunk_size + seq_len % chunk_size for seq_len in seqlens]).cuda().to(torch.int32)
+    chunk_num_list = torch.LongTensor([seq_len // chunk_size + (seq_len % chunk_size != 0) for seq_len in seqlens]).cuda().to(torch.int32)
+    chunk_size_list = torch.cat([torch.LongTensor([chunk_size for _ in range(chunk_num - 1)] + [seqlens[seq_id] - (chunk_num - 1) * chunk_size]) for seq_id, chunk_num in enumerate(chunk_num_list)]).cuda().to(torch.int32)
     chunk_num_list_cumsum = torch.cumsum(chunk_num_list, dim=0).to(torch.int32)
     chunk_num_global = chunk_num_list_cumsum[-1].item()
 
@@ -448,20 +447,7 @@ def run_test(
     )
     kernel = tilelang.compile(program)
     print(kernel.get_kernel_source())
-    kernel(Q, K, W, U, G, initial_state, cu_seqlens, seqlens, chunk_num_list_cumsum, h_tilelang, final_state_tilelang, V_new_tilelang, o_tilelang)
-
-    print("tilelang_o:", o_tilelang)
-    print("o_ref:", o_ref)
-
-    print("tilelang_final_state:", final_state_tilelang)
-    print("final_state_ref:", final_state_ref)
-
-    # fla_time = do_bench(chunk_gated_delta_rule_fwd_h, K, W, U, G, initial_state, store_final_state, chunk_size, save_new_value)
-    fla_time = do_bench(ref_program, Q, K, W, U, G, initial_state, store_final_state, cu_seqlens, 1.0)
-    tilelang_time = do_bench(kernel, Q, K, W, U, G, initial_state, cu_seqlens, seqlens, chunk_num_list_cumsum, h_tilelang, final_state_tilelang, V_new_tilelang, o_tilelang)
-
-    print(f"tilelang time: {tilelang_time} ms")
-    print(f"fla time: {fla_time} ms")
+    kernel(Q, K, W, U, G, initial_state, cu_seqlens, seqlens, chunk_num_list_cumsum, chunk_size_list, h_tilelang, final_state_tilelang, V_new_tilelang, o_tilelang)
 
     # check
     try:
@@ -469,8 +455,8 @@ def run_test(
         print("tilelang chunk gated delta rule fwd o passed √")
     except Exception as e:
         print("tilelang chunk gated delta rule fwd o failed ✗")
-        # print("ref h:", h_ref)
-        # print("tilelang h:", h_tilelang)
+        print("tilelang_o:", o_tilelang)
+        print("o_ref:", o_ref)
         print(e)
 
     try:
@@ -478,6 +464,8 @@ def run_test(
         print("tilelang chunk gated delta rule fwd final_state passed √")
     except Exception as e:
         print("tilelang chunk gated delta rule fwd final_state failed ✗")
+        print("tilelang_final_state:", final_state_tilelang)
+        print("final_state_ref:", final_state_ref)
         print(e)
 
     # try:
@@ -488,6 +476,13 @@ def run_test(
     #     # print("ref V_new:", V_new_ref)
     #     # print("tilelang V_new:", V_new_tilelang)
     #     print(e)
+
+    # fla_time = do_bench(chunk_gated_delta_rule_fwd_h, K, W, U, G, initial_state, store_final_state, chunk_size, save_new_value)
+    fla_time = do_bench(ref_program, Q, K, W, U, G, initial_state, store_final_state, cu_seqlens, 1.0)
+    tilelang_time = do_bench(kernel, Q, K, W, U, G, initial_state, cu_seqlens, seqlens, chunk_num_list_cumsum, chunk_size_list, h_tilelang, final_state_tilelang, V_new_tilelang, o_tilelang)
+
+    print(f"tilelang time: {tilelang_time} ms")
+    print(f"fla time: {fla_time} ms")
 
 
 if __name__ == "__main__":
@@ -511,6 +506,6 @@ if __name__ == "__main__":
         block_DK=64,
         block_DV=32,
         threads=128,
-        num_stages=1,
+        num_stages=0,
         use_varlen=True,
     )
