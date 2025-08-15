@@ -1,5 +1,4 @@
 import argparse
-import torch
 import itertools
 import tilelang as tl
 import tilelang.language as T
@@ -8,6 +7,7 @@ from tilelang.carver.template import MatmulTemplate
 from tilelang.carver.arch import CUDA
 from tilelang.carver.arch import CDNA
 from tilelang.carver.roller.rasterization import NoRasterization
+import torch
 
 
 def ref_program(A, B):
@@ -16,10 +16,8 @@ def ref_program(A, B):
 
 def get_configs(M, N, K, with_roller=False, topk=20):
     if with_roller:
-        if torch.version.hip is not None:
-            arch=CDNA("hip")
-        else:
-            arch = CUDA("cuda")
+        arch = CDNA("hip") if torch.version.hip is not None else CUDA("cuda")
+
         carve_template = MatmulTemplate(
             M=M,
             N=N,

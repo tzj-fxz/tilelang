@@ -1,7 +1,5 @@
 from typing import Literal, Dict
 
-from tvm.script.ir_builder.tir.ir import func_attr
-
 # Implementation asm for fp4 to bf16, using twiddling
 # Reference: https://github.com/triton-lang/triton/blob/main/python/triton_kernels/triton_kernels/tensor_details/layout_details/hopper_value.py#L11-L18
 decode_f4_to_bf16_twiddling = """
@@ -49,6 +47,7 @@ __device__ void decode_fp4_to_bf16_twiddling(T1 *B_local, T2 *B_local_decode, co
 }
 """
 
+
 def get_mxfp_intrin_group(
     out_dtype: Literal["float16", "bfloat16"] = "bfloat16",
     source_format: Literal["int", "uint"] = "uint",
@@ -65,10 +64,16 @@ def get_mxfp_intrin_group(
     MXFP is a type of logic operation that takes three inputs. The intrinsic group refers to the set of
     intrinsic operations that can be performed on these inputs. This function retrieves and returns this group.
     """
-    assert out_dtype in ["float16", "bfloat16"], f"Invalid out_dtype: {out_dtype}. Expected 'float16' or 'bfloat16'."
-    assert source_format in ["int", "uint"], f"Invalid source_format: {source_format}. Expected 'int' or 'uint'."
-    assert storage_dtype in ["int32", "int8", "uint8"], f"Invalid storage_dtype: {storage_dtype}. Expected 'int32' or 'int8' or 'uint8'."
-    assert storage_scope in ["local", "warp"], f"Invalid storage_scope: {storage_scope}. Expected 'local' or 'warp'."
+    assert out_dtype in ["float16", "bfloat16"
+                        ], f"Invalid out_dtype: {out_dtype}. Expected 'float16' or 'bfloat16'."
+    assert source_format in ["int", "uint"
+                            ], f"Invalid source_format: {source_format}. Expected 'int' or 'uint'."
+    assert storage_dtype in [
+        "int32", "int8", "uint8"
+    ], f"Invalid storage_dtype: {storage_dtype}. Expected 'int32' or 'int8' or 'uint8'."
+    assert storage_scope in [
+        "local", "warp"
+    ], f"Invalid storage_scope: {storage_scope}. Expected 'local' or 'warp'."
 
     dtype_map = {"float16": "f16", "bfloat16": "bf16"}
     key = f"fp{source_bit}_to_{dtype_map[out_dtype]}"

@@ -199,9 +199,10 @@ def matmul(M, N, K, in_dtype, out_dtype, accum_dtype, num_bits=4, scale_size=32,
 
     # To use the autotuner, we need to return a PrimFunc
     # So we need to comment out the @tilelang.jit decorator
-    @tilelang.jit(out_idx=[-1],
-                  debug_root_path="/home/tzj/tilelang/examples/dequantize_gemm/",
-                  )
+    @tilelang.jit(
+        out_idx=[-1],
+        debug_root_path="/home/tzj/tilelang/examples/dequantize_gemm/",
+    )
     def kernel_func(block_M, block_N, block_K, num_stages, threads, split=1):
         num_elems_per_byte = 8 // num_bits
         storage_dtype = "uint8"
@@ -367,15 +368,7 @@ def main(m=256, n=256, k=256, scale_size=32, tune=False):
     total_flops = 2 * m * n * k
 
     kernel = matmul(
-        m,
-        n,
-        k,
-        "bfloat16",
-        "bfloat16",
-        "float32",
-        num_bits=4,
-        scale_size=scale_size,
-        tune=tune)(
+        m, n, k, "bfloat16", "bfloat16", "float32", num_bits=4, scale_size=scale_size, tune=tune)(
             block_M=256, block_N=128, block_K=128, num_stages=2, threads=256, split=1)
     profiler = kernel.get_profiler(tilelang.TensorSupplyType.Integer)
     profiler.assert_allclose(ref_program_scale, rtol=0.01, atol=0.01)

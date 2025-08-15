@@ -1,19 +1,25 @@
-from math import exp2
 import tilelang
 import tilelang.language as T
 from tilelang.autotuner import *
-from tilelang import register_cuda_postproc
-from tvm import tir, DataType
-import itertools
+from tilelang import register_cuda_postproc  # noqa: F401
+from tvm import DataType
 import torch
-import argparse
 
 tilelang.disable_cache()
 
 torch.manual_seed(0)
 
+# @register_cuda_postproc
+# def tilelang_callback_cuda_postproc(code, _):
+#     cuda_code = ""
+#     # with open("examples/dequantize_gemm/tilelang_jit_kernel_kernel_func_backup.c", "r") as f:
+#     with open("examples/dequantize_gemm/tilelang_jit_kernel_kernel_func_test.c", "r") as f:
+#         cuda_code = f.read()
+#     return cuda_code
+
+
 def torch_convert_bit_twiddling(tensor):
-    
+
     def print_bit(name, val):
         val_cpu = val.cpu().item()
         binary_repr = f'{val_cpu:032b}'
@@ -34,12 +40,13 @@ def torch_convert_bit_twiddling(tensor):
             bf16 = (val_concat << 6) & mask
         elif pos == 3:
             mask1 = 0b1000000000000000
-            mask2 = 0b0000000110000000  
+            mask2 = 0b0000000110000000
             mask3 = 0b0000000001000000
-            bf16 = ((val_concat << 1) & mask1) | ((val_concat >> 3) & mask2) | ((val_concat >> 7) & mask3)
+            bf16 = ((val_concat << 1) & mask1) | ((val_concat >> 3) & mask2) | (
+                (val_concat >> 7) & mask3)
         bf16_new = torch.tensor([bf16], dtype=torch.uint16, device=val0.device).view(torch.bfloat16)
         # Add bias for change from fp4 to bf16
-        bf16_new = bf16_new.item() * (2 ** 126)
+        bf16_new = bf16_new.item() * (2**126)
         return bf16_new
 
     N = tensor.shape[0]
@@ -51,11 +58,21 @@ def torch_convert_bit_twiddling(tensor):
     return new_tensor
 
 
-def matmul(M, N, K, in_dtype, out_dtype, accum_dtype, source_format='uint', num_bits=4, scale_size=32, tune=False):
+def matmul(M,
+           N,
+           K,
+           in_dtype,
+           out_dtype,
+           accum_dtype,
+           source_format='uint',
+           num_bits=4,
+           scale_size=32,
+           tune=False):
 
-    @tilelang.jit(out_idx=[-1],
-                  debug_root_path="/home/tzj/tilelang/examples/dequantize_gemm/",
-                #   pass_configs={tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True, tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True},
+    @tilelang.jit(
+        out_idx=[-1],
+        debug_root_path="/home/tzj/tilelang/examples/dequantize_gemm/",
+        #   pass_configs={tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True, tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True},
     )
     def kernel_func(block_M, block_N, block_K, num_stages, threads, split=1):
         num_elems_per_byte = 8 // num_bits
@@ -68,7 +85,6 @@ def matmul(M, N, K, in_dtype, out_dtype, accum_dtype, source_format='uint', num_
         B_dequantize_shared_shape = (block_N, block_K)
         Scale_shared_shape = (block_N, block_K // scale_size)
         assert K % (block_K * split) == 0
-        KK = K // split
 
         # Some variables for serial dequant in each thread
         MAX_TRANSACTION_SIZE_BITS = 128
@@ -104,15 +120,13 @@ def matmul(M, N, K, in_dtype, out_dtype, accum_dtype, source_format='uint', num_
                     T.ceildiv(N, block_N), T.ceildiv(M, block_M), threads=threads) as (bx, by):
                 A_shared = T.alloc_shared(A_shared_shape, in_dtype)
                 B_shared = T.alloc_shared(B_shared_shape, storage_dtype)
-                B_local = T.alloc_fragment(B_shared_shape, storage_dtype)
                 B_local_thread = T.alloc_local((local_compress_size,), storage_dtype)
                 B_dequantize_local_thread = T.alloc_local((local_size,), in_dtype)
                 B_dequantize_shared = T.alloc_shared(B_dequantize_shared_shape, in_dtype)
-                B_dequantize_local = T.alloc_fragment(B_dequantize_shared_shape, in_dtype)
                 Scale_shared = T.alloc_shared(Scale_shared_shape, storage_dtype)
                 Scale_local_thread = T.alloc_local((1,), storage_dtype)
                 Scale_local_thread_exponent = T.alloc_local((1,), "float32")
-                
+
                 C_local = T.alloc_fragment((block_M, block_N), accum_dtype)
                 C_shared = T.alloc_shared((block_M, block_N), out_dtype)
 
@@ -126,19 +140,19 @@ def matmul(M, N, K, in_dtype, out_dtype, accum_dtype, source_format='uint', num_
                 T.import_source(import_source)
 
                 tx = T.get_thread_binding()
-                element_per_thread = block_N * block_K // threads
 
                 T.clear(C_local)
                 for k in T.Pipelined(K // block_K, num_stages=num_stages):
                     T.copy(A[by * block_M, k * block_K], A_shared)
                     T.copy(B[bx * block_N, k * block_K // num_elems_per_byte], B_shared)
-                    # T.copy(Scale[bx * block_N, k * block_K // scale_size], Scale_local_thread)
-                    # T.copy(B_shared, B_local)
-                    
+                    T.copy(Scale[bx * block_N, k * block_K // scale_size], Scale_shared)
+
                     for i in T.serial(0, block_N * block_K // threads // vectorize_dequant_size):
                         # First, load data from share memory to register.
                         # Prepare for dequant.
-                        index_base = i * threads * (vectorize_dequant_size // num_elems_per_byte) + tx * (vectorize_dequant_size // num_elems_per_byte)
+                        index_base = i * threads * (
+                            vectorize_dequant_size // num_elems_per_byte) + tx * (
+                                vectorize_dequant_size // num_elems_per_byte)
                         for v in T.vectorized(0, vectorize_dequant_size // num_elems_per_byte):
                             index = index_base + v
                             vi = index // (block_K // num_elems_per_byte)
@@ -148,8 +162,9 @@ def matmul(M, N, K, in_dtype, out_dtype, accum_dtype, source_format='uint', num_
                         si = index_scale // (block_K // scale_size)
                         sj = index_scale % (block_K // scale_size)
                         Scale_local_thread[0] = Scale_shared[si, sj]
-                        Scale_local_thread_exponent[0] = T.exp2(T.cast(Scale_local_thread[0] - 127, "float"))
-                        
+                        Scale_local_thread_exponent[0] = T.exp2(
+                            T.cast(Scale_local_thread[0] - 127, "float"))
+
                         # Then, dequant.
                         T.call_extern(
                             func_name,
@@ -158,7 +173,7 @@ def matmul(M, N, K, in_dtype, out_dtype, accum_dtype, source_format='uint', num_
                             1,
                             dtype=in_dtype,
                         )
-                        
+
                         # Finally, store the dequantized data to shared memory.
                         for v in T.Parallel(vectorize_dequant_size):
                             B_dequantize_local_thread[v] *= Scale_local_thread_exponent[0]
@@ -170,10 +185,10 @@ def matmul(M, N, K, in_dtype, out_dtype, accum_dtype, source_format='uint', num_
                             B_dequantize_shared[vi, vj] = B_dequantize_local_thread[v]
 
                     T.gemm(A_shared, B_dequantize_shared, C_local, transpose_B=True)
-                
+
                 T.copy(C_local, C_shared)
                 T.copy(C_shared, C[by * block_M:(by + 1) * block_M,
-                                     bx * block_N:(bx + 1) * block_N])
+                                   bx * block_N:(bx + 1) * block_N])
 
         return main
 
@@ -188,7 +203,7 @@ def ref_program(A, qB, Scale):
     B = torch_convert_bit_twiddling(qB)
     for i in range(B.shape[0]):
         for j in range(B.shape[1]):
-            B[i][j] = B[i][j] * (2 ** (Scale[i][j // 32] - 127))
+            B[i][j] = B[i][j] * (2**(Scale[i][j // 32] - 127))
     C = torch.matmul(A.to(torch.float), B.T.to(torch.float))
     C = C.to(torch.__getattribute__(dtypeC))
     return C
