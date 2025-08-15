@@ -71,8 +71,8 @@ def matmul(M,
 
     @tilelang.jit(
         out_idx=[-1],
-        debug_root_path="/home/tzj/tilelang/examples/dequantize_gemm/",
-        #   pass_configs={tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True, tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True},
+        # debug_root_path="/home/tzj/tilelang/examples/dequantize_gemm/",
+        pass_configs={tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True, tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True},
     )
     def kernel_func(block_M, block_N, block_K, num_stages, threads, split=1):
         num_elems_per_byte = 8 // num_bits
@@ -216,8 +216,8 @@ def main(m=256, n=256, k=256, scale_size=32, tune=False):
         m, n, k, "bfloat16", "bfloat16", "float32", num_bits=4, scale_size=scale_size, tune=tune)(
             block_M=256, block_N=128, block_K=128, num_stages=2, threads=256, split=1)
     profiler = kernel.get_profiler(tilelang.TensorSupplyType.Auto)
-    # profiler.assert_allclose(ref_program, rtol=0.01, atol=0.01)
-    # print("All checks pass.")
+    profiler.assert_allclose(ref_program, rtol=0.01, atol=0.01)
+    print("All checks pass.")
     # latency = profiler.do_bench(ref_program, warmup=500)
     # print("Ref: {:.2f} ms".format(latency))
     # print("Ref: {:.2f} TFlops".format(total_flops / latency * 1e-9))
@@ -227,7 +227,7 @@ def main(m=256, n=256, k=256, scale_size=32, tune=False):
 
 
 if __name__ == "__main__":
-    # M, N, K = 256, 256, 256
-    M, N, K = 16384, 8192, 8192
+    M, N, K = 256, 256, 256
+    # M, N, K = 16384, 8192, 8192
     scale_size = 32
     main(M, N, K, scale_size)
