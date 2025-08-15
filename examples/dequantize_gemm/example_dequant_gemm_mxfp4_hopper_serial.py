@@ -1,3 +1,4 @@
+from math import exp2
 import tilelang
 import tilelang.language as T
 from tilelang.autotuner import *
@@ -10,15 +11,6 @@ import argparse
 tilelang.disable_cache()
 
 torch.manual_seed(0)
-
-# @register_cuda_postproc
-# def tilelang_callback_cuda_postproc(code, _):
-#     cuda_code = ""
-#     # with open("examples/dequantize_gemm/tilelang_jit_kernel_kernel_func_backup.c", "r") as f:
-#     with open("examples/dequantize_gemm/tilelang_jit_kernel_kernel_func_test.c", "r") as f:
-#         cuda_code = f.read()
-#     return cuda_code
-
 
 def torch_convert_bit_twiddling(tensor):
     
@@ -191,10 +183,12 @@ def matmul(M, N, K, in_dtype, out_dtype, accum_dtype, source_format='uint', num_
     return kernel
 
 
-def ref_program(A, qB):
+def ref_program(A, qB, Scale):
     dtypeC = "bfloat16"
-    # B = torch_convert(qB)
     B = torch_convert_bit_twiddling(qB)
+    for i in range(B.shape[0]):
+        for j in range(B.shape[1]):
+            B[i][j] = B[i][j] * (2 ** (Scale[i][j // 32] - 127))
     C = torch.matmul(A.to(torch.float), B.T.to(torch.float))
     C = C.to(torch.__getattribute__(dtypeC))
     return C
