@@ -53,10 +53,6 @@ def get_mxfp_intrin_group(
     source_format: Literal["int", "uint"] = "uint",
     source_bit: int = 4,
     storage_dtype: Literal["int32", "int8", "uint8"] = "uint8",
-    with_scaling: bool = False,
-    with_zeros: bool = False,
-    zeros_mode: Literal["original", "rescale", "quantized"] = "original",
-    storage_scope: str = "local",
     use_twiddling: bool = False,
 ) -> Dict[str, str]:
     """
@@ -71,9 +67,6 @@ def get_mxfp_intrin_group(
     assert storage_dtype in [
         "int32", "int8", "uint8"
     ], f"Invalid storage_dtype: {storage_dtype}. Expected 'int32' or 'int8' or 'uint8'."
-    assert storage_scope in [
-        "local", "warp"
-    ], f"Invalid storage_scope: {storage_scope}. Expected 'local' or 'warp'."
 
     dtype_map = {"float16": "f16", "bfloat16": "bf16"}
     key = f"fp{source_bit}_to_{dtype_map[out_dtype]}"
