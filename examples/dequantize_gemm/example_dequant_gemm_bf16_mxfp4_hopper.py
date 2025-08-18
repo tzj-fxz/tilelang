@@ -33,9 +33,9 @@ def get_configs():
     iter_params = dict(
         block_M=[64, 128, 256],
         block_N=[64, 128, 256],
-        block_K=[128],
+        block_K=[64, 128, 256],
         num_stages=[0, 2],
-        threads=[128, 256, 512],
+        threads=[128, 256],
         split=[1, 2],
     )
     return [{
@@ -186,6 +186,8 @@ def matmul(M,
             C_shared = T.alloc_shared((block_M, block_N), out_dtype)
 
             T.annotate_layout({
+                A_shared: tilelang.layout.make_swizzled_layout(A_shared),
+                B_shared: tilelang.layout.make_swizzled_layout(B_shared),
                 C_shared: tilelang.layout.make_swizzled_layout(C_shared),
             })
 
