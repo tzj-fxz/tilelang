@@ -69,9 +69,7 @@ def matmul(M,
            scale_size=32,
            tune=False):
 
-    @tilelang.jit(
-        out_idx=[-1],
-    )
+    @tilelang.jit(out_idx=[-1],)
     def kernel_func(block_M, block_N, block_K, num_stages, threads, split=1):
         num_elems_per_byte = 8 // num_bits
         storage_dtype = "uint8"
@@ -81,7 +79,6 @@ def matmul(M,
         A_shared_shape = (block_M, block_K)
         B_shared_shape = (block_N, block_K // num_elems_per_byte)
         B_dequantize_shared_shape = (block_N, block_K)
-        Scale_shared_shape = (block_N, block_K // scale_size)
         assert K % (block_K * split) == 0
 
         # Some variables for serial dequant in each thread
@@ -121,7 +118,6 @@ def matmul(M,
                 B_local_thread = T.alloc_local((local_compress_size,), storage_dtype)
                 B_dequantize_local_thread = T.alloc_local((local_size,), in_dtype)
                 B_dequantize_shared = T.alloc_shared(B_dequantize_shared_shape, in_dtype)
-                Scale_shared = T.alloc_shared(Scale_shared_shape, storage_dtype)
                 Scale_local_thread = T.alloc_local((1,), storage_dtype)
                 Scale_local_thread_exponent = T.alloc_local((1,), "float32")
 
@@ -158,7 +154,8 @@ def matmul(M,
                         index_scale = index_base // (scale_size // num_elems_per_byte)
                         si = index_scale // (block_K // scale_size)
                         sj = index_scale % (block_K // scale_size)
-                        Scale_local_thread[0] = Scale[bx * block_N + si, k * block_K // scale_size + sj]
+                        Scale_local_thread[0] = Scale[bx * block_N + si,
+                                                      k * block_K // scale_size + sj]
                         Scale_local_thread_exponent[0] = T.exp2(
                             T.cast(Scale_local_thread[0] - 127, "float"))
 
