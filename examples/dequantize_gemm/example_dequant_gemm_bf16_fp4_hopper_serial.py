@@ -9,15 +9,6 @@ tilelang.disable_cache()
 
 torch.manual_seed(0)
 
-# @register_cuda_postproc
-# def tilelang_callback_cuda_postproc(code, _):
-#     cuda_code = ""
-#     # with open("examples/dequantize_gemm/tilelang_jit_kernel_kernel_func_backup.c", "r") as f:
-#     with open("examples/dequantize_gemm/tilelang_jit_kernel_kernel_func_test.c", "r") as f:
-#         cuda_code = f.read()
-#     return cuda_code
-
-
 def torch_convert_bit_twiddling(tensor):
 
     def print_bit(name, val):
