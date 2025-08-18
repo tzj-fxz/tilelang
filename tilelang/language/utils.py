@@ -1,5 +1,5 @@
 from tilelang import tvm as tvm
-from tvm import PrimExpr
+from tvm.tir import PrimExpr
 
 
 def index_to_coordinates(index, shape) -> list[PrimExpr]:

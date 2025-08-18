@@ -6,7 +6,8 @@ It includes functionality to print variables, print values in buffers, and condi
 from tvm import tir
 from typing import Any
 from tilelang.language.kernel import get_thread_bindings
-from tilelang.language import copy, macro, serial, alloc_shared, index_to_coordinates
+from tilelang.language import copy, macro, serial, alloc_shared
+from tilelang.language.utils import index_to_coordinates
 
 
 @macro
