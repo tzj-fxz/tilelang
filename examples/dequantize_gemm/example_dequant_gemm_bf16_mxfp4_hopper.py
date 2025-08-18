@@ -35,7 +35,7 @@ def get_configs():
         block_N=[64, 128, 256],
         block_K=[64, 128, 256],
         num_stages=[0, 2],
-        threads=[128, 256],
+        threads=[128, 256, 512],
         split=[1, 2],
     )
     return [{
@@ -190,6 +190,8 @@ def matmul(M,
                 B_shared: tilelang.layout.make_swizzled_layout(B_shared),
                 C_shared: tilelang.layout.make_swizzled_layout(C_shared),
             })
+            if threads == 512:
+                T.no_set_max_nreg()
 
             T.clear(C_local)
             for k in T.Pipelined(K // block_K, num_stages=num_stages):
