@@ -71,11 +71,6 @@ def matmul(M,
 
     @tilelang.jit(
         out_idx=[-1],
-        # debug_root_path="/home/tzj/tilelang/examples/dequantize_gemm/",
-        pass_configs={
-            tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
-            tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True
-        },
     )
     def kernel_func(block_M, block_N, block_K, num_stages, threads, split=1):
         num_elems_per_byte = 8 // num_bits
@@ -148,7 +143,6 @@ def matmul(M,
                 for k in T.Pipelined(K // block_K, num_stages=num_stages):
                     T.copy(A[by * block_M, k * block_K], A_shared)
                     T.copy(B[bx * block_N, k * block_K // num_elems_per_byte], B_shared)
-                    T.copy(Scale[bx * block_N, k * block_K // scale_size], Scale_shared)
 
                     for i in T.serial(0, block_N * block_K // threads // vectorize_dequant_size):
                         # First, load data from share memory to register.
@@ -164,7 +158,7 @@ def matmul(M,
                         index_scale = index_base // (scale_size // num_elems_per_byte)
                         si = index_scale // (block_K // scale_size)
                         sj = index_scale % (block_K // scale_size)
-                        Scale_local_thread[0] = Scale_shared[si, sj]
+                        Scale_local_thread[0] = Scale[bx * block_N + si, k * block_K // scale_size + sj]
                         Scale_local_thread_exponent[0] = T.exp2(
                             T.cast(Scale_local_thread[0] - 127, "float"))
 
