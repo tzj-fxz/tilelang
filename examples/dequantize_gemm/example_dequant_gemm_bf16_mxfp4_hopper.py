@@ -6,6 +6,7 @@ from tvm import tir
 import torch
 from utils import torch_convert_bit_twiddling, torch_convert
 
+
 def _tir_u8_to_f4_to_bf16(nbit: int, val: tir.PrimExpr, pos: tir.PrimExpr, scale: tir.PrimExpr,
                           dtype: str):
     assert nbit == 4
@@ -26,6 +27,7 @@ def _tir_u8_to_f4_to_bf16(nbit: int, val: tir.PrimExpr, pos: tir.PrimExpr, scale
                                 | (m_f4 << tir.const(6, "uint16"))).astype("uint16"))
     return val_bf16
 
+
 def get_configs():
     import itertools
     iter_params = dict(
@@ -40,9 +42,8 @@ def get_configs():
         k: v for k, v in zip(iter_params, values)
     } for values in itertools.product(*iter_params.values())]
 
-@tilelang.autotune(
-    configs=get_configs(),
-)
+
+@tilelang.autotune(configs=get_configs(),)
 @tilelang.jit(out_idx=[-1],)
 def matmul(M,
            N,
@@ -59,8 +60,7 @@ def matmul(M,
            block_K=128,
            num_stages=2,
            threads=256,
-           split=1
-):
+           split=1):
 
     num_elems_per_byte = 8 // num_bits
     storage_dtype = "uint8"
@@ -73,7 +73,6 @@ def matmul(M,
     B_shared_shape = (block_N, Block_QK)
     B_dequantize_shared_shape = (block_N, block_K)
     assert K % (block_K * split) == 0
-
 
     from tilelang.quantize import get_mxfp_intrin_group
     # fast_dequant_bf16_fp4_twiddling
@@ -108,10 +107,10 @@ def matmul(M,
             bx = T.get_block_binding(0)
 
             B_local_thread = T.alloc_local((local_compress_size,), storage_dtype)
-            B_dequantize_local_thread = T.alloc_local((local_size,), out_dtype)        
+            B_dequantize_local_thread = T.alloc_local((local_size,), out_dtype)
             Scale_local_thread = T.alloc_local((1,), storage_dtype)
             Scale_local_thread_exponent = T.alloc_local((1,), "float32")
-            
+
             for i in T.serial(0, block_N * block_K // threads // local_size):
                 # First, load data from share memory to register.
                 # Prepare for dequant.
@@ -122,8 +121,7 @@ def matmul(M,
                 index_scale = index_base // (scale_size // num_elems_per_byte)
                 si = index_scale // (block_K // scale_size)
                 sj = index_scale % (block_K // scale_size)
-                Scale_local_thread[0] = Scale[bx * block_N + si,
-                                                k * block_K // scale_size + sj]
+                Scale_local_thread[0] = Scale[bx * block_N + si, k * block_K // scale_size + sj]
                 Scale_local_thread_exponent[0] = T.exp2(
                     T.cast(Scale_local_thread[0] - 127, "float"))
 
@@ -142,7 +140,8 @@ def matmul(M,
 
                 for v in T.vectorized(0, local_size):
                     index = i * threads * local_size + tx * local_size + v
-                    B_dequantize_shared[index // block_K, index % block_K] = B_dequantize_local_thread[v]
+                    B_dequantize_shared[index // block_K,
+                                        index % block_K] = B_dequantize_local_thread[v]
 
         return fast_dequant_bf16_fp4_twiddling
 
@@ -150,12 +149,11 @@ def matmul(M,
         assert in_dtype in ["fp4"]
         assert out_dtype in ["bfloat16"]
 
-
         @T.macro
         def simple_dequant_bf16_fp4(B_shared, B_dequantize_shared, Scale, k):
             B_local = T.alloc_fragment(B_shared_shape, storage_dtype)
             B_dequantize_local = T.alloc_fragment(B_dequantize_shared_shape, in_dtype)
-            
+
             bx = T.get_block_binding(0)
             T.copy(B_shared, B_local)
             for i, j in T.Parallel(block_N, block_K):
@@ -163,7 +161,9 @@ def matmul(M,
                     num_bits,
                     B_local[i, j // num_elems_per_byte],
                     j % num_elems_per_byte,
-                    Scale[bx * block_N + i, k * block_K // scale_size + j // scale_size],  # Scale is the exponential part, within the representation of uint8
+                    Scale[
+                        bx * block_N + i, k * block_K // scale_size + j //
+                        scale_size],  # Scale is the exponential part, within the representation of uint8
                     dtype=in_dtype,
                 )
             T.copy(B_dequantize_local, B_dequantize_shared)
@@ -177,8 +177,7 @@ def matmul(M,
             Scale: T.Tensor(Scale_shape, storage_dtype),
             C: T.Tensor((M, N), out_dtype),
     ):
-        with T.Kernel(
-                T.ceildiv(N, block_N), T.ceildiv(M, block_M), threads=threads) as (bx, by):
+        with T.Kernel(T.ceildiv(N, block_N), T.ceildiv(M, block_M), threads=threads) as (bx, by):
             A_shared = T.alloc_shared(A_shared_shape, in_dtype)
             B_shared = T.alloc_shared(B_shared_shape, storage_dtype)
             B_dequantize_shared = T.alloc_shared(B_dequantize_shared_shape, in_dtype)
@@ -201,11 +200,9 @@ def matmul(M,
                 T.gemm(A_shared, B_dequantize_shared, C_local, transpose_B=True)
 
             T.copy(C_local, C_shared)
-            T.copy(C_shared, C[by * block_M:(by + 1) * block_M,
-                                bx * block_N:(bx + 1) * block_N])
+            T.copy(C_shared, C[by * block_M:(by + 1) * block_M, bx * block_N:(bx + 1) * block_N])
 
     return main
-
 
 
 def ref_program_twiddling(A, qB, Scale):
@@ -217,6 +214,7 @@ def ref_program_twiddling(A, qB, Scale):
     C = torch.matmul(A.to(torch.float), B.T.to(torch.float))
     C = C.to(torch.__getattribute__(dtypeC))
     return C
+
 
 def ref_program_simple(A, qB, Scale):
     dtypeC = "bfloat16"
@@ -237,10 +235,23 @@ def main(m=256, n=256, k=256, scale_size=32, fast_dequant=True, tune=False):
             m, n, k, "bfloat16", "bfloat16", "float32", num_bits=4, scale_size=scale_size)
     else:
         kernel = matmul(
-            m, n, k, "bfloat16", "bfloat16", "float32", num_bits=4, scale_size=scale_size, block_M=256, block_N=128, block_K=128, num_stages=2, threads=256, split=1)
-    
+            m,
+            n,
+            k,
+            "bfloat16",
+            "bfloat16",
+            "float32",
+            num_bits=4,
+            scale_size=scale_size,
+            block_M=256,
+            block_N=128,
+            block_K=128,
+            num_stages=2,
+            threads=256,
+            split=1)
+
     profiler = kernel.get_profiler(tilelang.TensorSupplyType.Auto)
-    
+
     if fast_dequant:
         profiler.assert_allclose(ref_program_twiddling, rtol=0.01, atol=0.01)
     else:

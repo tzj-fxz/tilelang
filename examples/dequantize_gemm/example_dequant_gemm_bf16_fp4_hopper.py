@@ -6,6 +6,7 @@ from tvm import tir
 import torch
 from utils import torch_convert_bit_twiddling, torch_convert
 
+
 def get_configs():
     import itertools
     iter_params = dict(
@@ -20,9 +21,8 @@ def get_configs():
         k: v for k, v in zip(iter_params, values)
     } for values in itertools.product(*iter_params.values())]
 
-@tilelang.autotune(
-    configs=get_configs(),
-)
+
+@tilelang.autotune(configs=get_configs(),)
 @tilelang.jit(
     out_idx=[-1],
     pass_configs={
@@ -30,7 +30,21 @@ def get_configs():
         tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True
     },
 )
-def matmul(M, N, K, in_dtype, out_dtype, accum_dtype, source_format='uint', num_bits=4, fast_dequant=True, block_M=256, block_N=128, block_K=128, num_stages=2, threads=256, split=1):
+def matmul(M,
+           N,
+           K,
+           in_dtype,
+           out_dtype,
+           accum_dtype,
+           source_format='uint',
+           num_bits=4,
+           fast_dequant=True,
+           block_M=256,
+           block_N=128,
+           block_K=128,
+           num_stages=2,
+           threads=256,
+           split=1):
     num_elems_per_byte = 8 // num_bits
     storage_dtype = "uint8"
 
@@ -59,7 +73,7 @@ def matmul(M, N, K, in_dtype, out_dtype, accum_dtype, source_format='uint', num_
     assert import_source is not None, "mxfp_intrin_info is not found"
     assert func_name is not None, "mxfp_intrin_info is not found"
     import_source = import_source
-    
+
     def get_fast_dequant_twiddling_func(in_dtype="fp4", out_dtype="bfloat16"):
         assert in_dtype in ["fp4"]
         assert out_dtype in ["bfloat16"]
@@ -77,7 +91,7 @@ def matmul(M, N, K, in_dtype, out_dtype, accum_dtype, source_format='uint', num_
             tx = T.get_thread_binding()
 
             B_local_thread = T.alloc_local((local_compress_size,), storage_dtype)
-            B_dequantize_local_thread = T.alloc_local((local_size,), out_dtype)        
+            B_dequantize_local_thread = T.alloc_local((local_size,), out_dtype)
             for i in T.serial(0, block_N * block_K // threads // local_size):
                 # First, load data from share memory to register.
                 # Prepare for dequant.
@@ -97,7 +111,8 @@ def matmul(M, N, K, in_dtype, out_dtype, accum_dtype, source_format='uint', num_
                 # Finally, store the dequantized data to shared memory.
                 for v in T.vectorized(0, local_size):
                     index = i * threads * local_size + tx * local_size + v
-                    B_dequantize_shared[index // block_K, index % block_K] = B_dequantize_local_thread[v]
+                    B_dequantize_shared[index // block_K,
+                                        index % block_K] = B_dequantize_local_thread[v]
 
         return fast_dequant_bf16_fp4_twiddling
 
@@ -105,8 +120,8 @@ def matmul(M, N, K, in_dtype, out_dtype, accum_dtype, source_format='uint', num_
         assert in_dtype in ["fp4"]
         assert out_dtype in ["bfloat16"]
 
-        def _tir_u8_to_f4_to_bf16(nbit: int, val: tir.PrimExpr, pos: tir.PrimExpr, scale: tir.PrimExpr,
-                                dtype: str):
+        def _tir_u8_to_f4_to_bf16(nbit: int, val: tir.PrimExpr, pos: tir.PrimExpr,
+                                  scale: tir.PrimExpr, dtype: str):
             assert nbit == 4
             assert dtype == "bfloat16"
             assert val.dtype == "uint8"
@@ -120,9 +135,9 @@ def matmul(M, N, K, in_dtype, out_dtype, accum_dtype, source_format='uint', num_
             # To handle the overflow, we use the max function to limit the exponential part to 8 bits
             e_bf16 = T.min(e_bf16 + scale, tir.const((1 << 8) - 1, "uint16"))
             m_f4 = f4 & tir.const(1, "uint16")
-            val_bf16 = tir.reinterpret("bfloat16",
-                                    ((((s << tir.const(8, "uint16")) | e_bf16) << tir.const(7, "uint16"))
-                                        | (m_f4 << tir.const(6, "uint16"))).astype("uint16"))
+            val_bf16 = tir.reinterpret(
+                "bfloat16", ((((s << tir.const(8, "uint16")) | e_bf16) << tir.const(7, "uint16"))
+                             | (m_f4 << tir.const(6, "uint16"))).astype("uint16"))
             return val_bf16
 
         @T.macro
@@ -144,12 +159,11 @@ def matmul(M, N, K, in_dtype, out_dtype, accum_dtype, source_format='uint', num_
 
     @T.prim_func
     def main(
-        A: T.Tensor(A_shape, in_dtype),
-        B: T.Tensor(B_shape, storage_dtype),
-        C: T.Tensor((M, N), out_dtype),
+            A: T.Tensor(A_shape, in_dtype),
+            B: T.Tensor(B_shape, storage_dtype),
+            C: T.Tensor((M, N), out_dtype),
     ):
-        with T.Kernel(
-                T.ceildiv(N, block_N), T.ceildiv(M, block_M), threads=threads) as (bx, by):
+        with T.Kernel(T.ceildiv(N, block_N), T.ceildiv(M, block_M), threads=threads) as (bx, by):
             A_shared = T.alloc_shared(A_shared_shape, in_dtype)
             B_shared = T.alloc_shared(B_shared_shape, storage_dtype)
             B_dequantize_shared = T.alloc_shared(B_dequantize_shared_shape, in_dtype)
@@ -165,7 +179,7 @@ def matmul(M, N, K, in_dtype, out_dtype, accum_dtype, source_format='uint', num_
             for k in T.Pipelined(K // block_K, num_stages=num_stages):
                 T.copy(A[by * block_M, k * block_K], A_shared)
                 T.copy(B[bx * block_N, k * block_K // num_elems_per_byte], B_shared)
-                
+
                 if fast_dequant:
                     get_fast_dequant_twiddling_func()(B_shared, B_dequantize_shared)
                 else:
@@ -174,8 +188,7 @@ def matmul(M, N, K, in_dtype, out_dtype, accum_dtype, source_format='uint', num_
                 T.gemm(A_shared, B_dequantize_shared, C_local, transpose_B=True)
 
             T.copy(C_local, C_shared)
-            T.copy(C_shared, C[by * block_M:(by + 1) * block_M,
-                                bx * block_N:(bx + 1) * block_N])
+            T.copy(C_shared, C[by * block_M:(by + 1) * block_M, bx * block_N:(bx + 1) * block_N])
 
     return main
 
@@ -187,6 +200,7 @@ def ref_program_twiddling(A, qB):
     C = C.to(torch.__getattribute__(dtypeC))
     return C
 
+
 def ref_program_simple(A, qB):
     dtypeC = "bfloat16"
     B = torch_convert(qB)
@@ -194,12 +208,28 @@ def ref_program_simple(A, qB):
     C = C.to(torch.__getattribute__(dtypeC))
     return C
 
+
 def main(m=256, n=256, k=256, fast_dequant=True, tune=False):
     total_flops = 2 * m * n * k
     if tune:
-        kernel = matmul(m, n, k, "bfloat16", "bfloat16", "float32", num_bits=4, fast_dequant=fast_dequant)
+        kernel = matmul(
+            m, n, k, "bfloat16", "bfloat16", "float32", num_bits=4, fast_dequant=fast_dequant)
     else:
-        kernel = matmul(m, n, k, "bfloat16", "bfloat16", "float32", num_bits=4, fast_dequant=fast_dequant, block_M=256, block_N=128, block_K=128, num_stages=2, threads=256, split=1)
+        kernel = matmul(
+            m,
+            n,
+            k,
+            "bfloat16",
+            "bfloat16",
+            "float32",
+            num_bits=4,
+            fast_dequant=fast_dequant,
+            block_M=256,
+            block_N=128,
+            block_K=128,
+            num_stages=2,
+            threads=256,
+            split=1)
     profiler = kernel.get_profiler(tilelang.TensorSupplyType.Auto)
     if fast_dequant:
         profiler.assert_allclose(ref_program_twiddling, rtol=0.01, atol=0.01)

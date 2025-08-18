@@ -65,6 +65,7 @@ def torch_convert(tensor, scale_size=None, Scale=None):
                 new_tensor[i][j] = _convert(tensor[i][j // 2], j % 2)
     return new_tensor
 
+
 def print_bit(name, val):
     val_cpu = val.cpu().item()
     binary_repr = f'{val_cpu:032b}'
