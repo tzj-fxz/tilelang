@@ -1,6 +1,7 @@
 from tilelang import tvm as tvm
 from tvm import PrimExpr
 
+
 def index_to_coordinates(index, shape) -> list[PrimExpr]:
     """
     Convert a flat (linear) index to multi-dimensional coordinates for a given shape.
