@@ -300,7 +300,8 @@ def matmul(M,
                         bx * block_N + i, k * block_K // scale_size + j //
                         scale_size],  # Scale is the exponential part, within the representation of uint8
                     dtype=out_dtype,
-                ) * T.shift_left(1, (Scale[bx * block_N + i, k * block_K // scale_size + j // scale_size]))
+                ) * T.shift_left(
+                    1, (Scale[bx * block_N + i, k * block_K // scale_size + j // scale_size]))
             T.copy(B_dequantize_local, B_dequantize_shared)
 
         return simple_dequant_bf16_fp4
@@ -426,7 +427,15 @@ def main(m=256, n=256, k=256, scale_size=32, fast_dequant=True, tune=False):
 
     if tune:
         kernel = matmul(
-            m, n, k, "bfloat16", "bfloat16", "float32", num_bits=4, scale_size=scale_size, fast_dequant=fast_dequant)
+            m,
+            n,
+            k,
+            "bfloat16",
+            "bfloat16",
+            "float32",
+            num_bits=4,
+            scale_size=scale_size,
+            fast_dequant=fast_dequant)
     else:
         kernel = matmul(
             m,
