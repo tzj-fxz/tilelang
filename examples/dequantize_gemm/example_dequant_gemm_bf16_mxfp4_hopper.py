@@ -121,7 +121,7 @@ def matmul(M,
         num_stages (int, optional): pipelining stages for K loop (default 2).
         threads (int, optional): threads per block used by the kernel (default 256).
         split (int, optional): split factor along K used by the scheduler (default 1).
-        with_bias (bool, optional): whether to add bias to the output (default False).
+        with_bias (bool, optional): whether to add Bias to the output (default False).
 
         Returns:
         A T.prim_func implementing the tiled, pipelined GEMM that:
@@ -141,11 +141,11 @@ def matmul(M,
     Block_QK = block_K // num_elems_per_byte
     A_shape = (M, K)
     B_shape = (N, QK)
-    bias_shape = (M, N)
+    Bias_shape = (M, N)
     Scale_shape = (N, K // scale_size)
     A_shared_shape = (block_M, block_K)
     B_shared_shape = (block_N, Block_QK)
-    bias_shared_shape = (block_M, block_N)
+    Bias_shared_shape = (block_M, block_N)
     B_dequantize_shared_shape = (block_N, block_K)
     assert K % (block_K * split) == 0
 
@@ -315,7 +315,7 @@ def matmul(M,
             A: T.Tensor(A_shape, in_dtype),
             B: T.Tensor(B_shape, storage_dtype),
             Scale: T.Tensor(Scale_shape, storage_dtype),
-            bias: T.Tensor(bias_shape, out_dtype),
+            Bias: T.Tensor(Bias_shape, out_dtype),
             C: T.Tensor((M, N), out_dtype),
     ):
         """
@@ -333,7 +333,7 @@ def matmul(M,
             A_shared = T.alloc_shared(A_shared_shape, in_dtype)
             B_shared = T.alloc_shared(B_shared_shape, storage_dtype)
             B_dequantize_shared = T.alloc_shared(B_dequantize_shared_shape, in_dtype)
-            bias_shared = T.alloc_shared(bias_shared_shape, out_dtype)
+            Bias_shared = T.alloc_shared(Bias_shared_shape, out_dtype)
             C_local = T.alloc_fragment((block_M, block_N), accum_dtype)
             C_shared = T.alloc_shared((block_M, block_N), out_dtype)
 
@@ -345,16 +345,16 @@ def matmul(M,
 
             if with_bias:
                 T.annotate_layout({
-                    bias_shared: tilelang.layout.make_swizzled_layout(bias_shared),
+                    Bias_shared: tilelang.layout.make_swizzled_layout(Bias_shared),
                 })
 
             if threads == 512:
                 T.disable_warp_group_reg_alloc()
 
             if with_bias:
-                T.copy(bias[by * block_M:(by + 1) * block_M, bx * block_N:(bx + 1) * block_N],
-                       bias_shared)
-                T.copy(bias_shared, C_local)
+                T.copy(Bias[by * block_M:(by + 1) * block_M, bx * block_N:(bx + 1) * block_N],
+                       Bias_shared)
+                T.copy(Bias_shared, C_local)
             else:
                 T.clear(C_local)
 
@@ -373,7 +373,7 @@ def matmul(M,
     return main
 
 
-def ref_program_twiddling(A, qB, Scale, bias=None):
+def ref_program_twiddling(A, qB, Scale, Bias=None):
     """
     Compute A @ B^T where B is reconstructed from bit-twiddled 4-bit quantized data and per-block scales, returning bfloat16 results.
     
@@ -397,7 +397,7 @@ def ref_program_twiddling(A, qB, Scale, bias=None):
     return C
 
 
-def ref_program_twiddling_with_bias(A, qB, Scale, bias):
+def ref_program_twiddling_with_bias(A, qB, Scale, Bias):
     """
     Compute A @ B^T where B is reconstructed from bit-twiddled 4-bit quantized data and per-block scales, returning bfloat16 results.
     
@@ -407,7 +407,7 @@ def ref_program_twiddling_with_bias(A, qB, Scale, bias):
         A (torch.Tensor): Left operand with shape (M, K), used in floating precision.
         qB (torch.Tensor): Quantized representation of B (packed 4-bit values) compatible with torch_convert_bit_twiddling.
         Scale (torch.Tensor): Per-column-group scale values; Scale indices correspond to groups of 32 columns in B.
-        bias (torch.Tensor): Bias tensor with shape (M, N).
+        Bias (torch.Tensor): Bias tensor with shape (M, N).
 
     Returns:
         torch.Tensor: Resulting matrix C with shape (M, N) in bfloat16.
@@ -417,12 +417,12 @@ def ref_program_twiddling_with_bias(A, qB, Scale, bias):
     for i in range(B.shape[0]):
         for j in range(B.shape[1]):
             B[i][j] = B[i][j] * (2**(Scale[i][j // 32]))
-    C = torch.matmul(A.to(torch.float), B.T.to(torch.float)) + bias
+    C = torch.matmul(A.to(torch.float), B.T.to(torch.float)) + Bias
     C = C.to(torch.__getattribute__(dtypeC))
     return C
 
 
-def ref_program_simple(A, qB, Scale, bias=None):
+def ref_program_simple(A, qB, Scale, Bias=None):
     """
     Compute a BF16 matrix product A · B^T from a quantized B with simple (non-twiddling) dequantization.
     
@@ -448,7 +448,7 @@ def ref_program_simple(A, qB, Scale, bias=None):
     return C
 
 
-def ref_program_simple_with_bias(A, qB, Scale, bias):
+def ref_program_simple_with_bias(A, qB, Scale, Bias):
     """
     Compute a BF16 matrix product A · B^T from a quantized B with simple (non-twiddling) dequantization.
     
@@ -460,7 +460,7 @@ def ref_program_simple_with_bias(A, qB, Scale, bias):
     - A: 2D tensor representing the left operand (will be cast to float32 for the matmul).
     - qB: Quantized representation of B accepted by `torch_convert`.
     - Scale: 2D tensor of exponent offsets; Scale[i][g] is applied to columns j where g == j // 32.
-    - bias: 2D tensor representing the bias (will be cast to float32 for the matmul).
+    - Bias: 2D tensor representing the Bias (will be cast to float32 for the matmul).
 
 
     Returns:
@@ -473,7 +473,7 @@ def ref_program_simple_with_bias(A, qB, Scale, bias):
     for i in range(B.shape[0]):
         for j in range(B.shape[1]):
             B[i][j] = B[i][j] * (2**(Scale[i][j // 32]))
-    C = torch.matmul(A.to(torch.float), B.T.to(torch.float)) + bias
+    C = torch.matmul(A.to(torch.float), B.T.to(torch.float)) + Bias
     C = C.to(torch.__getattribute__(dtypeC))
     return C
 
