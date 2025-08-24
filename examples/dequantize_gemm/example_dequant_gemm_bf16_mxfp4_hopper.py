@@ -352,7 +352,8 @@ def matmul(M,
                 T.disable_warp_group_reg_alloc()
 
             if with_bias:
-                T.copy(bias[by * block_M:(by + 1) * block_M, bx * block_N:(bx + 1) * block_N], bias_shared)
+                T.copy(bias[by * block_M:(by + 1) * block_M, bx * block_N:(bx + 1) * block_N],
+                       bias_shared)
                 T.copy(bias_shared, C_local)
             else:
                 T.clear(C_local)
