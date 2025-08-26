@@ -324,7 +324,9 @@ private:
       auto mbar = makeGetBarrier(producer_barrier_idx_);
       auto arg0 = call->args[0].as<Call>();
       // Check if this is a 1D TMA load
-      auto is_1d_tma_load = arg0 && !arg0.value()->op.same_as(create_tma_descriptor()) && call->op.same_as(tma_load());
+      auto is_1d_tma_load =
+          arg0 && !arg0.value()->op.same_as(create_tma_descriptor()) &&
+          call->op.same_as(tma_load());
       if (is_1d_tma_load) {
         call.CopyOnWrite()->args.Set(2, mbar);
       } else {

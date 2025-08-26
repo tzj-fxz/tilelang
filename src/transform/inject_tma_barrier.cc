@@ -63,7 +63,8 @@ private:
   void VisitExpr_(const CallNode *call) final {
     if (call->op.same_as(tma_load()) || call->op.same_as(tma_load_im2col())) {
       auto arg0 = call->args[0].as<Call>();
-      if (call->op.same_as(tma_load()) && arg0 && !arg0.value()->op.same_as(create_tma_descriptor())) {
+      if (call->op.same_as(tma_load()) && arg0 &&
+          !arg0.value()->op.same_as(create_tma_descriptor())) {
         // 1D TMA load has tvm_access_ptr of shared tensor in its args[0]
         bulk_copy_bytes = call->args[3] * loop_extents;
       } else {
@@ -162,11 +163,14 @@ private:
   PrimExpr VisitExpr_(const CallNode *op) {
     if (op->op.same_as(tma_load())) {
       auto arg0 = op->args[0].as<Call>();
-      bool is_1d_tma_load = arg0 && !arg0.value()->op.same_as(create_tma_descriptor()) && op->op.same_as(tma_load());
+      bool is_1d_tma_load =
+          arg0 && !arg0.value()->op.same_as(create_tma_descriptor()) &&
+          op->op.same_as(tma_load());
       visited_tma_load_ = true;
       Array<PrimExpr> new_args = op->args;
-      new_args.Set(is_1d_tma_load ? 2 : 1, Call(DataType::Handle(), get_mbarrier(),
-                           {IntImm(DataType::Int(32), 0)}));
+      new_args.Set(is_1d_tma_load ? 2 : 1,
+                   Call(DataType::Handle(), get_mbarrier(),
+                        {IntImm(DataType::Int(32), 0)}));
       return Call(op->dtype, op->op, new_args);
     }
     return IRMutatorWithAnalyzer::VisitExpr_(op);
@@ -452,7 +456,8 @@ private:
       auto barrier_id = tma_op_to_barrier_id_[GetRef<Call>(op)];
       auto new_args = op->args;
       auto arg0 = op->args[0].as<Call>();
-      auto is_1d_tma_load = arg0 && !arg0.value()->op.same_as(create_tma_descriptor());
+      auto is_1d_tma_load =
+          arg0 && !arg0.value()->op.same_as(create_tma_descriptor());
       if (is_1d_tma_load) {
         new_args.Set(2, barrier_id);
       } else {

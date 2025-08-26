@@ -804,12 +804,15 @@ Stmt Copy::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer,
 
   // Add 1D TMA copy when the global and shared memory is contiguous
   {
-    // Currently we check the shared tensor before layout remapping, so we skip the layout definition check
+    // Currently we check the shared tensor before layout remapping, so we skip
+    // the layout definition check
     bool shared_is_contiguous = true;
     bool shared_not_full_dim_encounter = false;
     for (ssize_t i = shared_range.size() - 1; i >= 0; --i) {
       if (!shared_not_full_dim_encounter) {
-        if (!analyzer->CanProve(shared_range[i]->extent == shared_tensor_before_remap->shape[i] && shared_range[i]->min == 0)) {
+        if (!analyzer->CanProve(shared_range[i]->extent ==
+                                    shared_tensor_before_remap->shape[i] &&
+                                shared_range[i]->min == 0)) {
           shared_not_full_dim_encounter = true;
         }
       } else {
@@ -824,7 +827,9 @@ Stmt Copy::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer,
     bool global_not_full_dim_encounter = false;
     for (ssize_t i = global_range.size() - 1; i >= 0; --i) {
       if (!global_not_full_dim_encounter) {
-        if (!analyzer->CanProve(global_range[i]->extent == global_tensor->shape[i] && global_range[i]->min == 0)) {
+        if (!analyzer->CanProve(global_range[i]->extent ==
+                                    global_tensor->shape[i] &&
+                                global_range[i]->min == 0)) {
           global_not_full_dim_encounter = true;
         }
       } else {
@@ -843,22 +848,26 @@ Stmt Copy::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer,
     for (size_t i = 0; i < global_range.size(); i++) {
       global_elements *= global_range[i]->extent;
     }
-    bool element_match = analyzer->CanProveEqual(shared_elements, global_elements);
+    bool element_match =
+        analyzer->CanProveEqual(shared_elements, global_elements);
     bool no_oob = true;
     for (size_t i = 0; i < shared_range.size(); i++) {
-      if (!analyzer->CanProve(shared_range[i]->min + shared_range[i]->extent <= shared_tensor_before_remap->shape[i])) {
+      if (!analyzer->CanProve(shared_range[i]->min + shared_range[i]->extent <=
+                              shared_tensor_before_remap->shape[i])) {
         no_oob = false;
         break;
       }
     }
     for (size_t i = 0; i < global_range.size(); i++) {
-      if (!analyzer->CanProve(global_range[i]->min + global_range[i]->extent <= global_tensor->shape[i])) {
+      if (!analyzer->CanProve(global_range[i]->min + global_range[i]->extent <=
+                              global_tensor->shape[i])) {
         no_oob = false;
         break;
       }
     }
     // Add 1D TMA copy
-    if (shared_is_contiguous && global_is_contiguous && element_match && no_oob) {
+    if (shared_is_contiguous && global_is_contiguous && element_match &&
+        no_oob) {
       PrimExpr elements = analyzer->Simplify(shared_elements);
       PrimExpr shared_addr = shared_tensor_before_remap.access_ptr(
           is_load ? 2 : 1, DataType::Handle(), 1, offset, elements);
@@ -867,9 +876,17 @@ Stmt Copy::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer,
       Stmt tma_copy;
       if (is_load) {
         // the zero is a placeholder for mbarrier id
-        tma_copy = Evaluate(Call(DataType::Handle(), tma_load(), {shared_addr, global_addr, 0, elements * shared_tensor_before_remap->dtype.bytes(), this->eviction_policy}));
+        tma_copy =
+            Evaluate(Call(DataType::Handle(), tma_load(),
+                          {shared_addr, global_addr, 0,
+                           elements * shared_tensor_before_remap->dtype.bytes(),
+                           this->eviction_policy}));
       } else {
-        tma_copy = Evaluate(Call(DataType::Handle(), tma_store(), {global_addr, shared_addr, elements * shared_tensor_before_remap->dtype.bytes(), this->eviction_policy}));
+        tma_copy =
+            Evaluate(Call(DataType::Handle(), tma_store(),
+                          {global_addr, shared_addr,
+                           elements * shared_tensor_before_remap->dtype.bytes(),
+                           this->eviction_policy}));
       }
       tma_copy = IfThenElse(EQ(T.thread_var, T.thread_bounds->min), tma_copy);
       return tma_copy;
@@ -1312,7 +1329,8 @@ Array<PrimExpr> TMAIm2ColDesc::EncodeCallArgs() const {
 
 // Register the Copy operation with TVM's TIR system
 // This makes the copy operation available for use in TVM programs
-// - Takes 5 inputs: src_buffer, dst_buffer, coalesced_width, disable_tma, eviction_policy
+// - Takes 5 inputs: src_buffer, dst_buffer, coalesced_width, disable_tma,
+// eviction_policy
 // - Marked as opaque since it has side effects (memory writes)
 TIR_REGISTER_TL_OP(Copy, copy)
     .set_num_inputs(5)

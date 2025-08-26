@@ -6,6 +6,7 @@ import example_elementwise_add_tma_1d
 def test_example_elementwise_add():
     example_elementwise_add.main()
 
+
 def test_example_elementwise_add_tma_1d():
     example_elementwise_add_tma_1d.main()
 
