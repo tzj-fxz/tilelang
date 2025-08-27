@@ -804,9 +804,15 @@ Stmt Copy::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer,
 
   // Add 1D TMA copy when the global and shared memory is contiguous
   {
-    // Currently we check the shared tensor before layout remapping, so we skip
-    // the layout definition check
+    // Check if shared_tensor->name is present in T.buffer_var_gemm (Array<PrimExpr>)
+    // to avoid use 1D TMA copy for swizzled layout
     bool shared_is_contiguous = true;
+    for (const auto& v : T.buffer_var_gemm) {
+      if (v->name_hint == shared_tensor->name) {
+        shared_is_contiguous = false;
+        break;
+      }
+    }
     bool shared_not_full_dim_encounter = false;
     for (ssize_t i = shared_range.size() - 1; i >= 0; --i) {
       if (!shared_not_full_dim_encounter) {
@@ -822,8 +828,8 @@ Stmt Copy::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer,
         }
       }
     }
-    // Currently we do not check the empty stride of global tensor
-    bool global_is_contiguous = true;
+    // Currently we check the empty stride of global tensor
+    bool global_is_contiguous = !global_tensor->strides.empty();
     bool global_not_full_dim_encounter = false;
     for (ssize_t i = global_range.size() - 1; i >= 0; --i) {
       if (!global_not_full_dim_encounter) {
@@ -866,8 +872,13 @@ Stmt Copy::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer,
       }
     }
     // Add 1D TMA copy
+    // LOG(INFO) << "shared_is_contiguous: " << shared_is_contiguous;
+    // LOG(INFO) << "global_is_contiguous: " << global_is_contiguous;
+    // LOG(INFO) << "element_match: " << element_match;
+    // LOG(INFO) << "no_oob: " << no_oob;
     if (shared_is_contiguous && global_is_contiguous && element_match &&
         no_oob) {
+      // LOG(INFO) << "TMA 1D bulk copy is supported";
       PrimExpr elements = analyzer->Simplify(shared_elements);
       PrimExpr shared_addr = shared_tensor_before_remap.access_ptr(
           is_load ? 2 : 1, DataType::Handle(), 1, offset, elements);
