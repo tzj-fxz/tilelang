@@ -1,9 +1,6 @@
 import argparse
 import tilelang
 import tilelang.language as T
-import torch
-
-tilelang.disable_cache()
 
 
 def ref_program(x, y):
