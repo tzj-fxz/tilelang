@@ -98,7 +98,6 @@ private:
       buffer_var_gemm_.push_back(srcA_buffer_var);
       buffer_var_gemm_.push_back(srcB_buffer_var);
       buffer_var_gemm_.push_back(dst_buffer_var);
-      // LOG(INFO) << "buffer_var_gemm_: " << buffer_var_gemm_;
     } else if (call->op.same_as(Op::Get("tl.gemm_sp"))) {
       auto srcA_buffer_access_ptr = Downcast<Call>(call->args[0]);
       ICHECK(srcA_buffer_access_ptr->op.same_as(builtin::tvm_access_ptr()));
@@ -112,7 +111,6 @@ private:
       buffer_var_gemm_.push_back(srcA_buffer_var);
       buffer_var_gemm_.push_back(srcB_buffer_var);
       buffer_var_gemm_.push_back(dst_buffer_var);
-      // LOG(INFO) << "buffer_var_gemm_: " << buffer_var_gemm_;
     }
   }
 

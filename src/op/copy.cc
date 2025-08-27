@@ -871,14 +871,9 @@ Stmt Copy::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer,
         break;
       }
     }
-    // Add 1D TMA copy
-    // LOG(INFO) << "shared_is_contiguous: " << shared_is_contiguous;
-    // LOG(INFO) << "global_is_contiguous: " << global_is_contiguous;
-    // LOG(INFO) << "element_match: " << element_match;
-    // LOG(INFO) << "no_oob: " << no_oob;
+    // Add 1D TMA copy only for load
     if (shared_is_contiguous && global_is_contiguous && element_match &&
-        no_oob) {
-      // LOG(INFO) << "TMA 1D bulk copy is supported";
+        no_oob && is_load) {
       PrimExpr elements = analyzer->Simplify(shared_elements);
       PrimExpr shared_addr = shared_tensor_before_remap.access_ptr(
           is_load ? 2 : 1, DataType::Handle(), 1, offset, elements);
