@@ -804,10 +804,10 @@ Stmt Copy::LowerBulkCopy(const LowerArgs &T, arith::Analyzer *analyzer,
 
   // Add 1D TMA copy when the global and shared memory is contiguous
   {
-    // Check if shared_tensor->name is present in T.buffer_var_gemm (Array<PrimExpr>)
-    // to avoid use 1D TMA copy for swizzled layout
+    // Check if shared_tensor->name is present in T.buffer_var_gemm
+    // (Array<PrimExpr>) to avoid use 1D TMA copy for swizzled layout
     bool shared_is_contiguous = true;
-    for (const auto& v : T.buffer_var_gemm) {
+    for (const auto &v : T.buffer_var_gemm) {
       if (v->name_hint == shared_tensor->name) {
         shared_is_contiguous = false;
         break;

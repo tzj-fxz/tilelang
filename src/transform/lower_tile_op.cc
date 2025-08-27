@@ -12,8 +12,8 @@
 #include "../layout/layout.h"
 #include "../layout/utils.h"
 #include "../op/builtin.h"
-#include "../op/op.h"
 #include "../op/gemm.h"
+#include "../op/op.h"
 
 #include "arith/ir_mutator_with_analyzer.h"
 #include "loop_partition.h"
@@ -219,7 +219,8 @@ public:
     auto target = f->GetAttr<Target>(tvm::attr::kTarget);
     ICHECK(target.defined()) << "LowerTileOpPass: Require the target attribute";
     substituter.target_ = target.value();
-    // For TMA 1D, we should collect the buffers which are not used in GEMM and do not need swizzle
+    // For TMA 1D, we should collect the buffers which are not used in GEMM and
+    // do not need swizzle
     BufferGemmCollector collector;
     collector.Collect(f->body);
     substituter.buffer_var_gemm_ = collector.GetBufferVarGemm();
@@ -498,11 +499,10 @@ private:
       thread_bounds = Range::FromMinExtent(0, 1);
     }
 
-    auto lowered =
-        tile_op->Lower(LowerArgs{target_, thread_bounds, thread_var_->var,
-                                 callback, layout_map_, buffer_remap_,
-                                 buffer_var_gemm_},
-                       analyzer_);
+    auto lowered = tile_op->Lower(
+        LowerArgs{target_, thread_bounds, thread_var_->var, callback,
+                  layout_map_, buffer_remap_, buffer_var_gemm_},
+        analyzer_);
     return IRMutatorWithAnalyzer::VisitStmt(lowered);
   }
 
