@@ -6,8 +6,6 @@ from tvm import tir
 import torch
 from utils import torch_convert_bit_twiddling, torch_convert
 
-tilelang.disable_cache()
-
 
 def _tir_u8_to_f4_to_bf16(nbit: int, val: tir.PrimExpr, pos: tir.PrimExpr, scale: tir.PrimExpr,
                           dtype: str):
@@ -540,25 +538,24 @@ def main(m=256, n=256, k=256, scale_size=32, fast_dequant=True, with_bias=False,
 
     profiler = kernel.get_profiler(tilelang.TensorSupplyType.Auto)
 
-    # if fast_dequant:
-    #     if with_bias:
-    #         profiler.assert_allclose(ref_program_twiddling_with_bias, rtol=0.01, atol=0.01)
-    #     else:
-    #         profiler.assert_allclose(ref_program_twiddling, rtol=0.01, atol=0.01)
-    # else:
-    #     if with_bias:
-    #         profiler.assert_allclose(ref_program_simple_with_bias, rtol=0.01, atol=0.01)
-    #     else:
-    #         profiler.assert_allclose(ref_program_simple, rtol=0.01, atol=0.01)
-    # print("All checks pass.")
+    if fast_dequant:
+        if with_bias:
+            profiler.assert_allclose(ref_program_twiddling_with_bias, rtol=0.01, atol=0.01)
+        else:
+            profiler.assert_allclose(ref_program_twiddling, rtol=0.01, atol=0.01)
+    else:
+        if with_bias:
+            profiler.assert_allclose(ref_program_simple_with_bias, rtol=0.01, atol=0.01)
+        else:
+            profiler.assert_allclose(ref_program_simple, rtol=0.01, atol=0.01)
+    print("All checks pass.")
     latency = profiler.do_bench(warmup=500)
     print("Tile-lang: {:.2f} ms".format(latency))
     print("Tile-lang: {:.2f} TFlops".format(total_flops / latency * 1e-9))
 
 
 if __name__ == "__main__":
-    # M, N, K = 256, 256, 256
-    M, N, K = 16384, 8192, 8192
+    M, N, K = 256, 256, 256
     scale_size = 32
     main(M, N, K, scale_size, fast_dequant=True, with_bias=True)
     main(M, N, K, scale_size, fast_dequant=False, with_bias=True)
