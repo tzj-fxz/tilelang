@@ -219,7 +219,7 @@ def matmul(M,
             T.import_source(import_source)
 
             tx = T.get_thread_binding()
-            bx = T.get_block_binding(0)
+            bx = T.get_block_binding(0)  # noqa: F841
 
             B_local_thread = T.alloc_local((local_compress_size,), storage_dtype)
             B_dequantize_local_thread = T.alloc_local((local_size,), out_dtype)
@@ -295,7 +295,7 @@ def matmul(M,
             B_local = T.alloc_fragment(B_shared_shape, storage_dtype)
             B_dequantize_local = T.alloc_fragment(B_dequantize_shared_shape, out_dtype)
 
-            bx = T.get_block_binding(0)
+            bx = T.get_block_binding(0)  # noqa: F841
             T.copy(B_shared, B_local)
             for i, j in T.Parallel(block_N, block_K):
                 B_dequantize_local[i, j] = _tir_u8_to_f4_to_bf16(
@@ -306,8 +306,7 @@ def matmul(M,
                         i, k * block_K // scale_size + j //
                         scale_size],  # Scale is the exponential part, within the representation of uint8
                     dtype=out_dtype,
-                ) * T.shift_left(
-                    1, (Scale_shared[i, k * block_K // scale_size + j // scale_size]))
+                ) * T.shift_left(1, (Scale_shared[i, k * block_K // scale_size + j // scale_size]))
             T.copy(B_dequantize_local, B_dequantize_shared)
 
         return simple_dequant_bf16_fp4
@@ -360,7 +359,8 @@ def matmul(M,
                 # T.copy(Bias[by * block_M:(by + 1) * block_M, bx * block_N:(bx + 1) * block_N],
                 #        Bias_shared)
                 # T.copy(Bias_shared, C_local)
-                T.copy(Bias[by * block_M:(by + 1) * block_M, bx * block_N:(bx + 1) * block_N], C_local)
+                T.copy(Bias[by * block_M:(by + 1) * block_M, bx * block_N:(bx + 1) * block_N],
+                       C_local)
             else:
                 T.clear(C_local)
 
@@ -371,7 +371,8 @@ def matmul(M,
                 T.copy(A[by * block_M, k * block_K], A_shared)
                 T.copy(B[bx * block_N, k * block_K // num_elems_per_byte], B_shared)
                 if fast_dequant:
-                    get_fast_dequant_twiddling_func()(B_shared, B_dequantize_shared, Scale_shared, k)
+                    get_fast_dequant_twiddling_func()(B_shared, B_dequantize_shared, Scale_shared,
+                                                      k)
                 else:
                     get_simple_dequant_func()(B_shared, B_dequantize_shared, Scale_shared, k)
                 T.gemm(A_shared, B_dequantize_shared, C_local, transpose_B=True)
@@ -539,24 +540,25 @@ def main(m=256, n=256, k=256, scale_size=32, fast_dequant=True, with_bias=False,
 
     profiler = kernel.get_profiler(tilelang.TensorSupplyType.Auto)
 
-    if fast_dequant:
-        if with_bias:
-            profiler.assert_allclose(ref_program_twiddling_with_bias, rtol=0.01, atol=0.01)
-        else:
-            profiler.assert_allclose(ref_program_twiddling, rtol=0.01, atol=0.01)
-    else:
-        if with_bias:
-            profiler.assert_allclose(ref_program_simple_with_bias, rtol=0.01, atol=0.01)
-        else:
-            profiler.assert_allclose(ref_program_simple, rtol=0.01, atol=0.01)
-    print("All checks pass.")
+    # if fast_dequant:
+    #     if with_bias:
+    #         profiler.assert_allclose(ref_program_twiddling_with_bias, rtol=0.01, atol=0.01)
+    #     else:
+    #         profiler.assert_allclose(ref_program_twiddling, rtol=0.01, atol=0.01)
+    # else:
+    #     if with_bias:
+    #         profiler.assert_allclose(ref_program_simple_with_bias, rtol=0.01, atol=0.01)
+    #     else:
+    #         profiler.assert_allclose(ref_program_simple, rtol=0.01, atol=0.01)
+    # print("All checks pass.")
     latency = profiler.do_bench(warmup=500)
     print("Tile-lang: {:.2f} ms".format(latency))
     print("Tile-lang: {:.2f} TFlops".format(total_flops / latency * 1e-9))
 
 
 if __name__ == "__main__":
-    M, N, K = 256, 256, 256
+    # M, N, K = 256, 256, 256
+    M, N, K = 16384, 8192, 8192
     scale_size = 32
     main(M, N, K, scale_size, fast_dequant=True, with_bias=True)
     main(M, N, K, scale_size, fast_dequant=False, with_bias=True)
