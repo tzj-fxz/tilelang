@@ -3,12 +3,12 @@ import tilelang.language as T
 import torch
 import tilelang.testing
 
+
 @tilelang.jit(
     out_idx=[-1],
     pass_configs={
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
     },
-    debug_root_path="./testing/python/math/"
 )
 def bitwise_reduce(
     M,
@@ -19,11 +19,12 @@ def bitwise_reduce(
     func,
     clear=True,
 ):
+
     @T.prim_func
     def reduce_func(
-        A: T.Tensor((M, N), "int32"),
-        B: T.Tensor((M), "int32"),
-        Output: T.Tensor((M), "int32"),
+            A: T.Tensor((M, N), "int32"),
+            B: T.Tensor((M), "int32"),
+            Output: T.Tensor((M), "int32"),
     ):
         with T.Kernel(T.ceildiv(N, block_N), T.ceildiv(M, block_M), threads=128) as (bx, by):
             A_shared = T.alloc_shared((block_M, block_N), "int32")
@@ -51,7 +52,7 @@ def run_single_bitwise_reduce(
 
     # Generate test data that exercises all bit patterns for robust bitwise reduce testing
     a = torch.zeros((M, N), device="cuda", dtype=torch.int32)
-    
+
     # Fill with patterns that will produce meaningful results for bitwise operations:
     # - Different bit patterns across rows/columns
     # - Mix of 0s and 1s in various positions
@@ -61,14 +62,14 @@ def run_single_bitwise_reduce(
             # Create varied bit patterns:
             # Row-based pattern: alternating bits based on row index
             row_pattern = (i & 0xF) << (i % 4)  # 4-bit patterns shifted by row
-            
+
             # Column-based pattern: different bit positions set based on column
             col_pattern = (1 << (j % 31))  # Single bit set at different positions
-            
+
             # Combine patterns with XOR to create diverse bit distributions
             # Add some deterministic "noise" based on position
             position_factor = (i * N + j) % 256
-            
+
             # Final value combines all patterns
             a[i, j] = (row_pattern ^ col_pattern ^ position_factor) & 0xFFFFFFFF
 
@@ -79,13 +80,11 @@ def run_single_bitwise_reduce(
 
     if name == "reduce_bitand":
         expected = torch.full((M,), -1, device="cuda", dtype=torch.int32)
-    elif name == "reduce_bitor":
-        expected = torch.full((M,), 0, device="cuda", dtype=torch.int32)
-    elif name == "reduce_bitxor":
+    elif name == "reduce_bitor" or name == "reduce_bitxor":
         expected = torch.full((M,), 0, device="cuda", dtype=torch.int32)
     else:
         raise ValueError("Invalid name: {}".format(name))
-    
+
     output = kernel(a, expected)
 
     for i in range(M):

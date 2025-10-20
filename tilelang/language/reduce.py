@@ -146,7 +146,7 @@ def reduce_bitand(buffer: tir.Buffer, out: tir.Buffer, dim: int = -1, clear: boo
         buffer (tir.Buffer): The input buffer
         out (tir.Buffer): The output buffer
         dim (int): The dimension to perform reduce on
-    
+
     Returns:
         tir.Call: Handle to the reduction operation
     """

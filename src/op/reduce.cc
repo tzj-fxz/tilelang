@@ -338,25 +338,27 @@ Stmt ReduceOpNode::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
                                   dst_indices));
     } else if (this->type->isBitAnd()) {
       if (!this->clear) {
-        stmts.push_back(BufferStore(dst_buffer,
-                                    bitwise_and(BufferLoad(dst_buffer, dst_indices),
-                                        BufferLoad(clear_buffer, dst_indices)),
-                                    dst_indices));
+        stmts.push_back(
+            BufferStore(dst_buffer,
+                        bitwise_and(BufferLoad(dst_buffer, dst_indices),
+                                    BufferLoad(clear_buffer, dst_indices)),
+                        dst_indices));
       } else {
-        stmts.push_back(BufferStore(dst_buffer,
-                                   BufferLoad(clear_buffer, dst_indices),
-                                   dst_indices));
+        stmts.push_back(BufferStore(
+            dst_buffer, BufferLoad(clear_buffer, dst_indices), dst_indices));
       }
     } else if (this->type->isBitOr()) {
-      stmts.push_back(BufferStore(dst_buffer,
-                                  bitwise_or(BufferLoad(dst_buffer, dst_indices),
-                                      BufferLoad(clear_buffer, dst_indices)),
-                                  dst_indices));
+      stmts.push_back(
+          BufferStore(dst_buffer,
+                      bitwise_or(BufferLoad(dst_buffer, dst_indices),
+                                 BufferLoad(clear_buffer, dst_indices)),
+                      dst_indices));
     } else if (this->type->isBitXor()) {
-      stmts.push_back(BufferStore(dst_buffer,
-                                  bitwise_xor(BufferLoad(dst_buffer, dst_indices),
-                                      BufferLoad(clear_buffer, dst_indices)),
-                                  dst_indices));
+      stmts.push_back(
+          BufferStore(dst_buffer,
+                      bitwise_xor(BufferLoad(dst_buffer, dst_indices),
+                                  BufferLoad(clear_buffer, dst_indices)),
+                      dst_indices));
     } else {
       ICHECK(false) << "Unsupported reduce type: " << this->type->type;
     }
