@@ -230,7 +230,7 @@ private:
       // The default memory order is relaxed
       // Ref: src/tl_templates/cuda/atomic.h::AtomicAdd
       const IntImm memory_order =
-          node->args.size() >= 4 ? Downcast<IntImm>(node->args[2]) : IntImm(0);
+          node->args.size() >= 3 ? Downcast<IntImm>(node->args[2]) : IntImm(0);
 
       Call address_of_dst =
           Call(DataType::Handle(), builtin::address_of(), {dst_node});
