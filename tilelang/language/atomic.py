@@ -227,7 +227,10 @@ def atomic_add(dst: Buffer,
         raise NotImplementedError(
             "return_prev is not supported for tile-region-based atomic operations")
 
-    return T.call_intrin("handle", op.Op.get("tl.atomicadd"), value, dst, use_tma,
+    if memory_order is None:
+        return T.call_intrin("handle", op.Op.get("tl.atomicadd"), value dst, use_tma, 0)
+    else:
+        return T.call_intrin("handle", op.Op.get("tl.atomicadd"), value, dst, use_tma,
                          _MEMORY_ORDER_ID_MAP[memory_order])
 
 
