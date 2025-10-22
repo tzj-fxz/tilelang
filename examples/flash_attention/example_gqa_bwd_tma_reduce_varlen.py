@@ -523,7 +523,10 @@ def flashattn_bwd_split(batch,
                 T.gemm(dsT_shared, K_shared, dq, transpose_A=True)
                 for i, j in T.Parallel(block_N, dim_qk):
                     if k_base * block_N + i < q_current_seqlen:
-                        T.atomic_add(dQ[q_start_idx + k_base * block_N + i, bx, j], dq[i, j], memory_order="release")
+                        T.atomic_add(
+                            dQ[q_start_idx + k_base * block_N + i, bx, j],
+                            dq[i, j],
+                            memory_order="release")
 
             T.copy(dv, dv_shared)
             for i, d in T.Parallel(block_M, dim_v):
