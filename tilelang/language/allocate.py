@@ -19,7 +19,7 @@ from tilelang import tvm as tvm
 from tvm.script import tir as T
 from tvm.tir import PrimExpr
 from tvm.script.parser.tir import block_attr
-from typing import Union
+from typing import Optional
 
 
 def alloc_shared(shape, dtype, scope="shared.dyn"):
@@ -68,7 +68,7 @@ def alloc_fragment(shape, dtype, scope="local.fragment"):
     return T.alloc_buffer(shape, dtype, scope=scope)
 
 
-def alloc_var(dtype, *args, scope="local.var", init: Union[PrimExpr] = None):
+def alloc_var(dtype, *args, scope="local.var", init: Optional[PrimExpr] = None):
     """Allocate a single-element variable buffer.
 
     Args:
