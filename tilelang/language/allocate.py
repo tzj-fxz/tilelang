@@ -15,7 +15,6 @@ with the appropriate memory scope.
 """
 
 from __future__ import annotations
-
 from tilelang import tvm as tvm
 from tvm.script import tir as T
 from tvm.tir import PrimExpr
