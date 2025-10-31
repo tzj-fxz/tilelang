@@ -7,6 +7,7 @@ import argparse
 from einops import rearrange, repeat
 from bert_padding import pad_input, unpad_input
 
+# tilelang.disable_cache()
 
 def generate_random_padding_mask(max_seqlen, batch_size, device, mode="random"):
     assert mode in ["full", "random", "third"]
@@ -386,7 +387,8 @@ def flashattn_bwd_atomic_add(batch,
 
 @tilelang.jit(pass_configs={
     tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-})
+    tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
+},debug_root_path="./examples/flash_attention/")
 def flashattn_bwd_split(batch,
                         total_q,
                         total_kv,
@@ -459,13 +461,19 @@ def flashattn_bwd_split(batch,
                 dk_shared: tilelang.layout.make_swizzled_layout(dk_shared),
             })
 
-            for i, d in T.Parallel(block_M, dim_qk):
-                if by * block_M + i < k_current_seqlen:
-                    K_shared[i, d] = K[k_start_idx + by * block_M + i, bx // groups, d]
-                    V_shared[i, d] = V[k_start_idx + by * block_M + i, bx // groups, d]
-                else:
-                    K_shared[i, d] = 0.0
-                    V_shared[i, d] = 0.0
+            if by * block_M + block_M < k_current_seqlen:
+                with T.attr("default", "async_scope", 1):
+                    for i, d in T.Parallel(block_M, dim_qk):
+                        K_shared[i, d] = K[k_start_idx + by * block_M + i, bx // groups, d]
+                        V_shared[i, d] = V[k_start_idx + by * block_M + i, bx // groups, d]
+            else:
+                for i, d in T.Parallel(block_M, dim_qk):
+                    if by * block_M + i < k_current_seqlen:
+                        K_shared[i, d] = K[k_start_idx + by * block_M + i, bx // groups, d]
+                        V_shared[i, d] = V[k_start_idx + by * block_M + i, bx // groups, d]
+                    else:
+                        K_shared[i, d] = 0.0
+                        V_shared[i, d] = 0.0
 
             T.clear(dv)
             T.clear(dk)
@@ -473,6 +481,11 @@ def flashattn_bwd_split(batch,
             loop_ed = T.ceildiv(q_current_seqlen, block_N)
 
             for k_base in T.Pipelined(loop_st, loop_ed, num_stages=num_stages):
+                # if k_base * block_N + block_N < q_current_seqlen:
+                #     with T.attr("default", "async_scope", 1):
+                #         for i, d in T.Parallel(block_N, dim_qk):
+                #             q[i, d] = Q[q_start_idx + k_base * block_N + i, bx, d]
+                # else:
                 for i, d in T.Parallel(block_N, dim_qk):
                     if k_base * block_N + i < q_current_seqlen:
                         q[i, d] = Q[q_start_idx + k_base * block_N + i, bx, d]
@@ -540,7 +553,7 @@ def flashattn_bwd_split(batch,
     return flash_bwd
 
 
-@torch.compile
+# @torch.compile
 class _attention(torch.autograd.Function):
 
     @staticmethod
