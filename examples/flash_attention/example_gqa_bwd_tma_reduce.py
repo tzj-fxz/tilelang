@@ -44,7 +44,9 @@ def flashattn_fwd(batch, heads, seq_len, dim_qk, dim_v, is_causal, block_M, bloc
             T.copy(Q[bz, bx * block_M:(bx + 1) * block_M, by, :], Q_shared)
             T.fill(acc_o, 0)
             T.fill(logsum, 0)
-            T.fill(scores_max, -T.infinity(accum_dtype))
+            # Warning: in causal/varlen/unaligned seqlen scenarios, the -inf will cause undefined behavior in exp ops
+            # We should set it to negative large number instead
+            T.fill(scores_max, T.Cast(accum_dtype, -1e30))
             loop_range = (
                 T.ceildiv(
                     (bx + 1) * block_M, block_N) if is_causal else T.ceildiv(seq_len, block_N))
@@ -53,7 +55,7 @@ def flashattn_fwd(batch, heads, seq_len, dim_qk, dim_v, is_causal, block_M, bloc
                 if is_causal:
                     for i, j in T.Parallel(block_M, block_N):
                         acc_s[i, j] = T.if_then_else(bx * block_M + i >= k * block_N + j, 0,
-                                                     -T.infinity(acc_s.dtype))
+                                                     T.Cast(accum_dtype, -1e30))
                 else:
                     T.clear(acc_s)
                 T.gemm(Q_shared, K_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)

@@ -87,7 +87,9 @@ def flashattn_fwd(batch,
 
             T.fill(acc_o, 0.0)
             T.fill(logsum, 0.0)
-            T.fill(scores_max, -T.infinity(accum_dtype))
+            # Warning: in causal/varlen/unaligned seqlen scenarios, the -inf will cause undefined behavior in exp ops
+            # We should set it to negative large number instead
+            T.fill(scores_max, T.Cast(accum_dtype, -1e30))
             loop_range = T.ceildiv(k_current_seqlen, block_N)
             for k in T.Pipelined(loop_range, num_stages=1):
                 for i, d in T.Parallel(block_N, dim_qk):
@@ -101,12 +103,12 @@ def flashattn_fwd(batch,
                         acc_s[i, j] = T.if_then_else((bx * block_M + i >= k * block_N + j) and
                                                      (bx * block_M + i < q_current_seqlen and
                                                       k * block_N + j < k_current_seqlen), 0,
-                                                     -T.infinity(acc_s.dtype))
+                                                     T.Cast(accum_dtype, -1e30))
                 else:
                     for i, j in T.Parallel(block_M, block_N):
                         acc_s[i, j] = T.if_then_else(
                             bx * block_M + i < q_current_seqlen and
-                            k * block_N + j < k_current_seqlen, 0, -T.infinity(acc_s.dtype))
+                            k * block_N + j < k_current_seqlen, 0, T.Cast(accum_dtype, -1e30))
                 T.gemm(Q_shared, K_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
                 for i, d in T.Parallel(block_N, dim_v):
                     if k * block_N + i < k_current_seqlen:
@@ -311,7 +313,7 @@ def flashattn_bwd_atomic_add(batch,
             T.clear(dv)
             T.clear(dk)
 
-            loop_st = (T.floordiv(by * block_M, block_N) if is_causal else 0)
+            loop_st = T.min(T.floordiv(by * block_M, block_N), T.floordiv(q_current_seqlen, block_N)) if is_causal else 0
             loop_ed = T.ceildiv(q_current_seqlen, block_N)
 
             for k_base in T.Pipelined(loop_st, loop_ed, num_stages=num_stages):
@@ -387,6 +389,7 @@ def flashattn_bwd_atomic_add(batch,
 
 @tilelang.jit(pass_configs={
     tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+    tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
     tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
 },debug_root_path="./examples/flash_attention/")
 def flashattn_bwd_split(batch,
@@ -461,6 +464,8 @@ def flashattn_bwd_split(batch,
                 dk_shared: tilelang.layout.make_swizzled_layout(dk_shared),
             })
 
+            T.clear(K_shared)
+            T.clear(V_shared)
             if by * block_M + block_M < k_current_seqlen:
                 with T.attr("default", "async_scope", 1):
                     for i, d in T.Parallel(block_M, dim_qk):
@@ -471,21 +476,13 @@ def flashattn_bwd_split(batch,
                     if by * block_M + i < k_current_seqlen:
                         K_shared[i, d] = K[k_start_idx + by * block_M + i, bx // groups, d]
                         V_shared[i, d] = V[k_start_idx + by * block_M + i, bx // groups, d]
-                    else:
-                        K_shared[i, d] = 0.0
-                        V_shared[i, d] = 0.0
 
             T.clear(dv)
             T.clear(dk)
-            loop_st = (T.floordiv(by * block_M, block_N) if is_causal else 0)
+            loop_st = T.min(T.floordiv(by * block_M, block_N), T.floordiv(q_current_seqlen, block_N)) if is_causal else 0
             loop_ed = T.ceildiv(q_current_seqlen, block_N)
 
             for k_base in T.Pipelined(loop_st, loop_ed, num_stages=num_stages):
-                # if k_base * block_N + block_N < q_current_seqlen:
-                #     with T.attr("default", "async_scope", 1):
-                #         for i, d in T.Parallel(block_N, dim_qk):
-                #             q[i, d] = Q[q_start_idx + k_base * block_N + i, bx, d]
-                # else:
                 for i, d in T.Parallel(block_N, dim_qk):
                     if k_base * block_N + i < q_current_seqlen:
                         q[i, d] = Q[q_start_idx + k_base * block_N + i, bx, d]
@@ -494,6 +491,7 @@ def flashattn_bwd_split(batch,
 
                 T.clear(qkT)
                 T.gemm(K_shared, q, qkT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+                # T.clear(do)
                 for i, d in T.Parallel(block_N, dim_v):
                     if k_base * block_N + i < q_current_seqlen:
                         do[i, d] = dO[q_start_idx + k_base * block_N + i, bx, d]
@@ -501,6 +499,7 @@ def flashattn_bwd_split(batch,
                         do[i, d] = 0.0
                 T.clear(dsT)
                 T.gemm(V_shared, do, dsT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
+                # T.clear(lse_shared)
                 for i in T.Parallel(block_N):
                     if k_base * block_N + i < q_current_seqlen:
                         lse_shared[i] = lse[q_start_idx + k_base * block_N + i, bx]
@@ -521,6 +520,7 @@ def flashattn_bwd_split(batch,
                             k_base * block_N + j < q_current_seqlen, qkT[i, j], 0)
                 T.copy(qkT, qkT_cast)
                 T.gemm(qkT_cast, do, dv, policy=T.GemmWarpPolicy.FullRow)
+                # T.clear(delta)
                 for i in T.Parallel(block_N):
                     if k_base * block_N + i < q_current_seqlen:
                         delta[i] = Delta[q_start_idx + k_base * block_N + i, bx]
@@ -553,7 +553,7 @@ def flashattn_bwd_split(batch,
     return flash_bwd
 
 
-# @torch.compile
+@torch.compile
 class _attention(torch.autograd.Function):
 
     @staticmethod
