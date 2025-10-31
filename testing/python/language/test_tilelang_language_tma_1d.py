@@ -1,4 +1,3 @@
-import argparse
 import torch
 import tilelang
 import tilelang.language as T
@@ -43,7 +42,7 @@ def run_elementwise_add(M, N):
     torch.testing.assert_close(out, ref_program(a, b), rtol=1e-2, atol=1e-2)
 
     code = kernel.get_kernel_source()
-    if N == block_N:
+    if block_N == N:
         assert "tma_load" in code and "CUtensorMap" not in code
     else:
         assert "tma_load" in code and "CUtensorMap" in code
