@@ -466,10 +466,10 @@ def flashattn_bwd_split(batch,
             # T.clear(V_shared)
             T.copy(K[k_start_idx + by * block_M:k_start_idx + (by + 1) * block_M, bx // groups, :], K_shared)
             T.copy(V[k_start_idx + by * block_M:k_start_idx + (by + 1) * block_M, bx // groups, :], V_shared)
-            for i, d in T.Parallel(block_M, dim_qk):
-                if by * block_M + i >= k_current_seqlen:
-                    K_shared[i, d] = 0
-                    V_shared[i, d] = 0
+            # for i, d in T.Parallel(block_M, dim_qk):
+            #     if by * block_M + i >= k_current_seqlen:
+            #         K_shared[i, d] = 0
+            #         V_shared[i, d] = 0
 
             T.clear(dv)
             T.clear(dk)
@@ -478,17 +478,17 @@ def flashattn_bwd_split(batch,
 
             for k_base in T.Pipelined(loop_st, loop_ed, num_stages=num_stages):
                 T.copy(Q[q_start_idx + k_base * block_N:q_start_idx + (k_base + 1) * block_N, bx, :], q)
-                for i, d in T.Parallel(block_N, dim_qk):
-                    if k_base * block_N + i >= q_current_seqlen:
-                        q[i, d] = 0.0
+                # for i, d in T.Parallel(block_N, dim_qk):
+                #     if k_base * block_N + i >= q_current_seqlen:
+                #         q[i, d] = 0.0
 
                 T.clear(qkT)
                 T.gemm(K_shared, q, qkT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
 
                 T.copy(dO[q_start_idx + k_base * block_N:q_start_idx + (k_base + 1) * block_N, bx, :], do)
-                for i, d in T.Parallel(block_N, dim_v):
-                    if k_base * block_N + i >= q_current_seqlen:
-                        do[i, d] = 0.0
+                # for i, d in T.Parallel(block_N, dim_v):
+                #     if k_base * block_N + i >= q_current_seqlen:
+                #         do[i, d] = 0.0
 
                 T.clear(dsT)
                 T.gemm(V_shared, do, dsT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
