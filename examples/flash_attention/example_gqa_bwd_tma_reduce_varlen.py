@@ -389,6 +389,9 @@ def flashattn_bwd_atomic_add(batch,
 
 @tilelang.jit(pass_configs={
     tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
+    tilelang.PassConfigKey.TL_DISABLE_WGMMA: True,
+    tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
+    tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
 },debug_root_path="./examples/flash_attention/")
 def flashattn_bwd_split(batch,
                         total_q,
@@ -437,6 +440,7 @@ def flashattn_bwd_split(batch,
             V_shared = T.alloc_shared([block_M, dim_v], dtype)
             qkT = T.alloc_fragment([block_M, block_N], accum_dtype)
             dsT = T.alloc_fragment([block_M, block_N], accum_dtype)
+            qkT_shared = T.alloc_shared([block_M, block_N], dtype)
             qkT_cast = T.alloc_fragment([block_M, block_N], dtype)
             dsT_cast = T.alloc_fragment([block_M, block_N], dtype)
             lse_shared = T.alloc_shared([block_N], accum_dtype)
@@ -511,8 +515,8 @@ def flashattn_bwd_split(batch,
                         qkT[i, j] = T.if_then_else(
                             by * block_M + i < k_current_seqlen and
                             k_base * block_N + j < q_current_seqlen, qkT[i, j], 0)
-                T.copy(qkT, qkT_cast)
-                T.gemm(qkT_cast, do, dv, policy=T.GemmWarpPolicy.FullRow)
+                T.copy(qkT, qkT_shared)
+                T.gemm(qkT_shared, do, dv, policy=T.GemmWarpPolicy.FullRow)
                 # T.clear(delta)
                 for i in T.Parallel(block_N):
                     if k_base * block_N + i < q_current_seqlen:
@@ -521,10 +525,11 @@ def flashattn_bwd_split(batch,
                         delta[i] = 0.0
 
                 for i, j in T.Parallel(block_M, block_N):
-                    dsT_cast[i, j] = qkT[i, j] * (dsT[i, j] - delta[j]) * sm_scale
-                T.gemm(dsT_cast, q, dk, policy=T.GemmWarpPolicy.FullRow)
+                    # dsT_cast[i, j] = qkT[i, j] * (dsT[i, j] - delta[j]) * sm_scale
+                    dsT_shared[i, j] = qkT[i, j] * (dsT[i, j] - delta[j]) * sm_scale
+                T.gemm(dsT_shared, q, dk, policy=T.GemmWarpPolicy.FullRow)
 
-                T.copy(dsT_cast, dsT_shared)
+                # T.copy(dsT_cast, dsT_shared)
                 T.clear(dq)
                 T.gemm(dsT_shared, K_shared, dq, transpose_A=True)
                 for i, j in T.Parallel(block_N, dim_qk):
@@ -608,7 +613,7 @@ class _attention(torch.autograd.Function):
             return x
 
         do, q, k, v, o = [maybe_contiguous(x) for x in (do_unpad, q, k, v, o)]
-        block_M = 128
+        block_M = 32
         block_N = 32
         mod_prep = flashattn_bwd_preprocess(BATCH, H, total_q, ctx.max_seqlen_q, D_HEAD_V)
         mod_post = flashattn_bwd_postprocess(total_q, total_kv, H, HEAD_KV, D_HEAD_QK, D_HEAD_V)
@@ -646,8 +651,8 @@ class _attention(torch.autograd.Function):
                 ctx.causal,
                 block_M,
                 block_N,
-                threads=256,
-                num_stages=2,
+                threads=128,
+                num_stages=0,
                 groups=groups)
             dq = torch.zeros_like(q, dtype=torch.float32)
             dk = torch.empty(groups, *k.shape, dtype=torch.float16, device=q.device)
@@ -746,10 +751,6 @@ def main(BATCH: int = 1,
     dV_ref, V.grad = V.grad.clone(), None
 
     torch.testing.assert_close(O, O_ref.half(), rtol=1e-2, atol=1e-2)
-    torch.testing.assert_close(dK, dK_ref, rtol=1e-2, atol=1e-2)
-    torch.testing.assert_close(dV, dV_ref, rtol=1e-2, atol=1e-2)
-    torch.testing.assert_close(dQ, dQ_ref, rtol=1e-2, atol=1e-2)
-    print('All checks passed.✅')
 
     def run():
         O_ref.backward(dO, retain_graph=True)
@@ -765,6 +766,11 @@ def main(BATCH: int = 1,
     latency = do_bench(run1, warmup=500)
     print("tilelang: {:.2f} ms".format(latency))
     print("tilelang: {:.2f} TFlops".format(total_flops / latency * 1e-9))
+
+    torch.testing.assert_close(dK, dK_ref, rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(dV, dV_ref, rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(dQ, dQ_ref, rtol=1e-2, atol=1e-2)
+    print('All checks passed.✅')
 
 
 if __name__ == "__main__":
