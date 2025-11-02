@@ -30,6 +30,7 @@ def generate_random_padding_mask(max_seqlen, batch_size, device, mode="random"):
 def flashattn_fwd(batch,
                   total_q,
                   total_kv,
+                  N_CTX,
                   heads,
                   max_seq_len,
                   dim_qk,
@@ -55,7 +56,7 @@ def flashattn_fwd(batch,
             cu_seqlens_q: T.Tensor([batch + 1], "int32"),  # type: ignore
             cu_seqlens_k: T.Tensor([batch + 1], "int32"),  # type: ignore
             Output: T.Tensor(o_shape, dtype),  # type: ignore
-            lse: T.Tensor([total_q, heads], accum_dtype),  # type: ignore
+            lse: T.Tensor([heads, N_CTX * batch], accum_dtype),  # type: ignore
     ):
         with T.Kernel(T.ceildiv(max_seq_len, block_M), heads, batch, threads=256) as (bx, by, bz):
             Q_shared = T.alloc_shared([block_M, dim_qk], dtype)
@@ -138,7 +139,7 @@ def flashattn_fwd(batch,
             for i in T.Parallel(block_M):
                 logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
                 if bx * block_M + i < q_current_seqlen:
-                    lse[q_start_idx + bx * block_M + i, by] = logsum[i]
+                    lse[by, q_start_idx + bx * block_M + i] = logsum[i]
 
     return flash_fwd
 
@@ -147,7 +148,7 @@ def flashattn_fwd(batch,
     out_idx=[3], pass_configs={
         tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
     })
-def flashattn_bwd_preprocess(batch, heads, total_q, max_seq_len, dim_v):
+def flashattn_bwd_preprocess(batch, heads, total_q, N_CTX, max_seq_len, dim_v):
     dtype = "float16"
     accum_dtype = "float"
     shape = [total_q, heads, dim_v]
@@ -158,7 +159,7 @@ def flashattn_bwd_preprocess(batch, heads, total_q, max_seq_len, dim_v):
             O: T.Tensor(shape, dtype),  # type: ignore
             dO: T.Tensor(shape, dtype),  # type: ignore
             cu_seqlens_q: T.Tensor([batch + 1], "int32"),  # type: ignore
-            Delta: T.Tensor([total_q, heads], accum_dtype),  # type: ignore
+            Delta: T.Tensor([heads, N_CTX * batch], accum_dtype),  # type: ignore
     ):
         with T.Kernel(heads, T.ceildiv(max_seq_len, blk), batch) as (bx, by, bz):
             o = T.alloc_fragment([blk, blk], dtype)
@@ -186,7 +187,7 @@ def flashattn_bwd_preprocess(batch, heads, total_q, max_seq_len, dim_v):
 
             for i in T.Parallel(blk):
                 if by * blk + i < q_current_seqlen:
-                    Delta[q_start_idx + by * blk + i, bx] = delta[i]
+                    Delta[bx, q_start_idx + by * blk + i] = delta[i]
 
     return flash_bwd_prep
 
@@ -237,6 +238,7 @@ def flashattn_bwd_postprocess(total_q, total_kv, heads, head_kv, dim_qk, dim_v):
 def flashattn_bwd_atomic_add(batch,
                              total_q,
                              total_kv,
+                             N_CTX,
                              heads,
                              max_seq_len,
                              dim_qk,
@@ -393,6 +395,7 @@ def flashattn_bwd_atomic_add(batch,
 def flashattn_bwd_split(batch,
                         total_q,
                         total_kv,
+                        N_CTX,
                         heads,
                         max_seq_len,
                         dim_qk,
@@ -421,8 +424,8 @@ def flashattn_bwd_split(batch,
             K: T.Tensor(k_shape, dtype),  # type: ignore
             V: T.Tensor(v_shape, dtype),  # type: ignore
             dO: T.Tensor(do_shape, dtype),  # type: ignore
-            lse: T.Tensor([total_q, heads], accum_dtype),  # type: ignore
-            Delta: T.Tensor([total_q, heads], accum_dtype),  # type: ignore
+            lse: T.Tensor([heads, N_CTX * batch], accum_dtype),  # type: ignore
+            Delta: T.Tensor([heads, N_CTX * batch], accum_dtype),  # type: ignore
             cu_seqlens_q: T.Tensor([batch + 1], "int32"),  # type: ignore
             cu_seqlens_k: T.Tensor([batch + 1], "int32"),  # type: ignore
             dQ: T.Tensor(q_shape, accum_dtype),  # type: ignore
@@ -492,10 +495,12 @@ def flashattn_bwd_split(batch,
 
                 T.clear(dsT)
                 T.gemm(V_shared, do, dsT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
-                # T.clear(lse_shared)
+
+                # TODO The SIMT copy occupy too many register resource, should be replaced by TMA
+                # T.copy(lse[bx, q_start_idx + k_base * block_N:q_start_idx + (k_base + 1) * block_N], lse_shared)
                 for i in T.Parallel(block_N):
                     if k_base * block_N + i < q_current_seqlen:
-                        lse_shared[i] = lse[q_start_idx + k_base * block_N + i, bx]
+                        lse_shared[i] = lse[bx, q_start_idx + k_base * block_N + i]
                     else:
                         lse_shared[i] = 0.0
                 for i, j in T.Parallel(block_M, block_N):
@@ -513,10 +518,12 @@ def flashattn_bwd_split(batch,
                             k_base * block_N + j < q_current_seqlen, qkT[i, j], 0)
                 T.copy(qkT, qkT_cast)
                 T.gemm(qkT_cast, do, dv, policy=T.GemmWarpPolicy.FullRow)
-                # T.clear(delta)
+
+                # T.copy(Delta[bx, q_start_idx + k_base * block_N:q_start_idx + (k_base + 1) * block_N], delta)
                 for i in T.Parallel(block_N):
+                    # delta[i] = Delta[q_start_idx + k_base * block_N + i, bx]
                     if k_base * block_N + i < q_current_seqlen:
-                        delta[i] = Delta[q_start_idx + k_base * block_N + i, bx]
+                        delta[i] = Delta[bx, q_start_idx + k_base * block_N + i]
                     else:
                         delta[i] = 0.0
 
@@ -577,12 +584,13 @@ class _attention(torch.autograd.Function):
         total_q = q_unpad.shape[0]
         total_kv = k_unpad.shape[0]
 
-        mod = flashattn_fwd(BATCH, total_q, total_kv, H, max_seqlen_q, D_HEAD_QK, D_HEAD_V, causal,
+        mod = flashattn_fwd(BATCH, total_q, total_kv, N_CTX, H, max_seqlen_q, D_HEAD_QK, D_HEAD_V, causal,
                             block_M, block_N, groups)
         o_unpad, lse = mod(q_unpad, k_unpad, v_unpad, cu_seqlens_q, cu_seqlens_k)
         o = pad_input(o_unpad, indices_q, BATCH, N_CTX)
         ctx.save_for_backward(q_unpad, k_unpad, v_unpad, o_unpad, lse, seqlens_q, seqlens_k,
                               cu_seqlens_q, cu_seqlens_k)
+        ctx.batch = BATCH
         ctx.causal = causal
         ctx.use_atomic = use_atomic
         ctx.max_seqlen_q = max_seqlen_q
@@ -594,7 +602,8 @@ class _attention(torch.autograd.Function):
     @staticmethod
     def backward(ctx, do):
         N_CTX = do.shape[1]
-        q, k, v, o, lse, seqlens_q, seqlens_k, cu_seqlens_q, cu_seqlens_k = ctx.saved_tensors
+        q, k, v, o, lse_clone, seqlens_q, seqlens_k, cu_seqlens_q, cu_seqlens_k = ctx.saved_tensors
+        # lse_clone = lse.clone()
         do_unpad, _, _, _ = unpad_input(
             do, (torch.arange(N_CTX, device=do.device).unsqueeze(0) < seqlens_q.unsqueeze(1)))
         total_q, H, D_HEAD_QK = q.shape
@@ -610,7 +619,7 @@ class _attention(torch.autograd.Function):
         do, q, k, v, o = [maybe_contiguous(x) for x in (do_unpad, q, k, v, o)]
         block_M = 128
         block_N = 32
-        mod_prep = flashattn_bwd_preprocess(BATCH, H, total_q, ctx.max_seqlen_q, D_HEAD_V)
+        mod_prep = flashattn_bwd_preprocess(BATCH, H, total_q, N_CTX, ctx.max_seqlen_q, D_HEAD_V)
         mod_post = flashattn_bwd_postprocess(total_q, total_kv, H, HEAD_KV, D_HEAD_QK, D_HEAD_V)
         delta = mod_prep(o, do, cu_seqlens_q)
 
@@ -619,6 +628,7 @@ class _attention(torch.autograd.Function):
                 BATCH,
                 total_q,
                 total_kv,
+                N_CTX,
                 H,
                 ctx.max_seqlen_q,
                 D_HEAD_QK,
@@ -632,13 +642,14 @@ class _attention(torch.autograd.Function):
             dq = torch.zeros_like(q, dtype=torch.float32)
             dk = torch.zeros_like(k, dtype=torch.float32)
             dv = torch.zeros_like(v, dtype=torch.float32)
-            kernel(q, k, v, do, lse, delta, cu_seqlens_q, cu_seqlens_k, dq, dk, dv)
+            kernel(q, k, v, do, lse_clone, delta, cu_seqlens_q, cu_seqlens_k, dq, dk, dv)
             dq, dk, dv = mod_post(dq, dk, dv)
         else:
             kernel = flashattn_bwd_split(
                 BATCH,
                 total_q,
                 total_kv,
+                N_CTX,
                 H,
                 ctx.max_seqlen_q,
                 D_HEAD_QK,
@@ -652,7 +663,7 @@ class _attention(torch.autograd.Function):
             dq = torch.zeros_like(q, dtype=torch.float32)
             dk = torch.empty(groups, *k.shape, dtype=torch.float16, device=q.device)
             dv = torch.empty(groups, *v.shape, dtype=torch.float16, device=q.device)
-            kernel(q, k, v, do, lse, delta, cu_seqlens_q, cu_seqlens_k, dq, dk, dv)
+            kernel(q, k, v, do, lse_clone, delta, cu_seqlens_q, cu_seqlens_k, dq, dk, dv)
             dq, _, _ = mod_post(dq, torch.zeros_like(k, dtype=torch.float32),
                                 torch.zeros_like(v, dtype=torch.float32))
             dk, dv = dk.sum(0), dv.sum(0)
@@ -745,12 +756,6 @@ def main(BATCH: int = 1,
     dK_ref, K.grad = K.grad.clone(), None
     dV_ref, V.grad = V.grad.clone(), None
 
-    torch.testing.assert_close(O, O_ref.half(), rtol=1e-2, atol=1e-2)
-    torch.testing.assert_close(dK, dK_ref, rtol=1e-2, atol=1e-2)
-    torch.testing.assert_close(dV, dV_ref, rtol=1e-2, atol=1e-2)
-    torch.testing.assert_close(dQ, dQ_ref, rtol=1e-2, atol=1e-2)
-    print('All checks passed.✅')
-
     def run():
         O_ref.backward(dO, retain_graph=True)
 
@@ -765,6 +770,12 @@ def main(BATCH: int = 1,
     latency = do_bench(run1, warmup=500)
     print("tilelang: {:.2f} ms".format(latency))
     print("tilelang: {:.2f} TFlops".format(total_flops / latency * 1e-9))
+
+    torch.testing.assert_close(O, O_ref.half(), rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(dK, dK_ref, rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(dV, dV_ref, rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(dQ, dQ_ref, rtol=1e-2, atol=1e-2)
+    print('All checks passed.✅')
 
 
 if __name__ == "__main__":
