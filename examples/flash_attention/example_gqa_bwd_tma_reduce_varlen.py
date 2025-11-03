@@ -194,8 +194,8 @@ def flashattn_bwd_preprocess(batch, heads, total_q, N_CTX, max_seq_len, dim_v):
 
 
 def make_dq_layout(dQ):
-    # bshd -> bhld to use tma reduction instruction
-    return T.Layout(dQ.shape, lambda b, l, h, d: [b, h, l, d])
+    # bshd -> bhsd to use tma reduction instruction
+    return T.Layout(dQ.shape, lambda l, h, d: [h, l, d])
 
 
 @tilelang.jit(
@@ -220,13 +220,13 @@ def flashattn_bwd_postprocess(total_q, total_kv, heads, head_kv, dim_qk, dim_v):
             dV_out: T.Tensor(v_shape, dtype),  # type: ignore
     ):
         with T.Kernel(T.ceildiv(total_q, blk), heads, threads=128) as (bx, by):
-            # T.annotate_layout({dQ: make_dq_layout(dQ)})
+            T.annotate_layout({dQ: make_dq_layout(dQ)})
             T.copy(dQ[bx * blk:(bx + 1) * blk, by, :], dQ_out[bx * blk:(bx + 1) * blk, by, :])
         with T.Kernel(T.ceildiv(total_kv, blk), head_kv, threads=128) as (bx, by):
-            # T.annotate_layout({
-            #     dK: make_dq_layout(dK),
-            #     dV: make_dq_layout(dV),
-            # })
+            T.annotate_layout({
+                dK: make_dq_layout(dK),
+                dV: make_dq_layout(dV),
+            })
             T.copy(dK[bx * blk:(bx + 1) * blk, by, :], dK_out[bx * blk:(bx + 1) * blk, by, :])
             T.copy(dV[bx * blk:(bx + 1) * blk, by, :], dV_out[bx * blk:(bx + 1) * blk, by, :])
 
@@ -290,6 +290,9 @@ def flashattn_bwd_atomic_add(batch,
             dv = T.alloc_fragment([block_M, dim_v], accum_dtype)
             dk = T.alloc_fragment([block_M, dim_qk], accum_dtype)
             dq = T.alloc_fragment([block_N, dim_qk], accum_dtype)
+            dv_shared = T.alloc_shared([block_M, dim_v], accum_dtype)
+            dk_shared = T.alloc_shared([block_M, dim_qk], accum_dtype)
+            dq_shared = T.alloc_shared([block_N, dim_qk], accum_dtype)
 
             q_start_idx = cu_seqlens_q[bz]
             k_start_idx = cu_seqlens_k[bz]
@@ -299,9 +302,9 @@ def flashattn_bwd_atomic_add(batch,
             k_current_seqlen = k_end_idx - k_start_idx
 
             T.annotate_layout({
-                # dQ: make_dq_layout(dQ),
-                # dK: make_dq_layout(dK),
-                # dV: make_dq_layout(dV),
+                dQ: make_dq_layout(dQ),
+                dK: make_dq_layout(dK),
+                dV: make_dq_layout(dV),
                 K_shared: tilelang.layout.make_swizzled_layout(K_shared),
             })
 
@@ -357,22 +360,25 @@ def flashattn_bwd_atomic_add(batch,
                 T.copy(dsT_cast, dsT_shared)
                 T.clear(dq)
                 T.gemm(dsT_shared, K_shared, dq, transpose_A=True)
+                T.copy(dq, dq_shared)
                 T.atomic_add(
                     dQ[q_start_idx + k_base * block_N:q_start_idx + k_base * block_N + block_N,
                        bx, :],
-                    dq,
-                    memory_order="relaxed")
+                    dq_shared,
+                    memory_order="relaxed", use_tma=True)
 
+            T.copy(dv, dv_shared)
             T.atomic_add(
                 dV[k_start_idx + by * block_M:k_start_idx + by * block_M + block_M,
                    bx // groups, :],
-                dv,
-                memory_order="relaxed")
+                dv_shared,
+                memory_order="relaxed", use_tma=True)
+            T.copy(dk, dk_shared)
             T.atomic_add(
                 dK[k_start_idx + by * block_M:k_start_idx + by * block_M + block_M,
                    bx // groups, :],
-                dk,
-                memory_order="relaxed")
+                dk_shared,
+                memory_order="relaxed", use_tma=True)
 
     return flash_bwd
 
@@ -447,7 +453,7 @@ def flashattn_bwd_split(batch,
             k_current_seqlen = k_end_idx - k_start_idx
 
             T.annotate_layout({
-                # dQ: make_dq_layout(dQ),
+                dQ: make_dq_layout(dQ),
                 K_shared: tilelang.layout.make_swizzled_layout(K_shared),
                 dv_shared: tilelang.layout.make_swizzled_layout(dv_shared),
                 dk_shared: tilelang.layout.make_swizzled_layout(dk_shared),
@@ -515,13 +521,9 @@ def flashattn_bwd_split(batch,
                             memory_order="relaxed")
 
             T.copy(dv, dv_shared)
-            for i, d in T.Parallel(block_M, dim_v):
-                if by * block_M + i < k_current_seqlen:
-                    dV[bx % groups, k_start_idx + by * block_M + i, bx // groups, d] = dv[i, d]
+            T.copy(dv_shared, dV[bx % groups, k_start_idx + by * block_M:k_start_idx + by * block_M + block_M, bx // groups, :])
             T.copy(dk, dk_shared)
-            for i, d in T.Parallel(block_M, dim_qk):
-                if by * block_M + i < k_current_seqlen:
-                    dK[bx % groups, k_start_idx + by * block_M + i, bx // groups, d] = dk[i, d]
+            T.copy(dk_shared, dK[bx % groups, k_start_idx + by * block_M:k_start_idx + by * block_M + block_M, bx // groups, :])
 
     return flash_bwd
 
@@ -768,6 +770,8 @@ if __name__ == "__main__":
     parser.add_argument(
         '--use_split', action='store_true', default=False, help='Use split for dK/dV')
     args = parser.parse_args()
+    # Can be set to True/False for testing
+    args.causal = True
 
     # Handle backward compatibility and logic
     if args.use_split:
@@ -775,7 +779,7 @@ if __name__ == "__main__":
     elif args.use_atomic:
         use_atomic = True
     else:
-        # Default: use split
+        # Default: use atomic
         use_atomic = True
 
     main(args.batch, args.h, args.n_ctx, args.d_head_qk, args.d_head_v, args.groups, args.causal,
