@@ -365,20 +365,23 @@ def flashattn_bwd_atomic_add(batch,
                     dQ[q_start_idx + k_base * block_N:q_start_idx + k_base * block_N + block_N,
                        bx, :],
                     dq_shared,
-                    memory_order="relaxed", use_tma=True)
+                    memory_order="relaxed",
+                    use_tma=True)
 
             T.copy(dv, dv_shared)
             T.atomic_add(
                 dV[k_start_idx + by * block_M:k_start_idx + by * block_M + block_M,
                    bx // groups, :],
                 dv_shared,
-                memory_order="relaxed", use_tma=True)
+                memory_order="relaxed",
+                use_tma=True)
             T.copy(dk, dk_shared)
             T.atomic_add(
                 dK[k_start_idx + by * block_M:k_start_idx + by * block_M + block_M,
                    bx // groups, :],
                 dk_shared,
-                memory_order="relaxed", use_tma=True)
+                memory_order="relaxed",
+                use_tma=True)
 
     return flash_bwd
 
@@ -521,9 +524,15 @@ def flashattn_bwd_split(batch,
                             memory_order="relaxed")
 
             T.copy(dv, dv_shared)
-            T.copy(dv_shared, dV[bx % groups, k_start_idx + by * block_M:k_start_idx + by * block_M + block_M, bx // groups, :])
+            T.copy(
+                dv_shared,
+                dV[bx % groups, k_start_idx + by * block_M:k_start_idx + by * block_M + block_M,
+                   bx // groups, :])
             T.copy(dk, dk_shared)
-            T.copy(dk_shared, dK[bx % groups, k_start_idx + by * block_M:k_start_idx + by * block_M + block_M, bx // groups, :])
+            T.copy(
+                dk_shared,
+                dK[bx % groups, k_start_idx + by * block_M:k_start_idx + by * block_M + block_M,
+                   bx // groups, :])
 
     return flash_bwd
 
