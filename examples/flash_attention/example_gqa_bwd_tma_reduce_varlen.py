@@ -56,7 +56,7 @@ def flashattn_fwd(batch,
             cu_seqlens_q: T.Tensor([batch + 1], "int32"),  # type: ignore
             cu_seqlens_k: T.Tensor([batch + 1], "int32"),  # type: ignore
             Output: T.Tensor(o_shape, dtype),  # type: ignore
-            lse: T.Tensor([heads, N_CTX * batch], accum_dtype),  # type: ignore
+            lse: T.Tensor([batch, heads, N_CTX], accum_dtype),  # type: ignore
     ):
         with T.Kernel(T.ceildiv(max_seq_len, block_M), heads, batch, threads=256) as (bx, by, bz):
             Q_shared = T.alloc_shared([block_M, dim_qk], dtype)
@@ -139,7 +139,7 @@ def flashattn_fwd(batch,
             for i in T.Parallel(block_M):
                 logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
                 if bx * block_M + i < q_current_seqlen:
-                    lse[by, q_start_idx + bx * block_M + i] = logsum[i]
+                    lse[bz, by, bx * block_M + i] = logsum[i]
 
     return flash_fwd
 
@@ -159,7 +159,7 @@ def flashattn_bwd_preprocess(batch, heads, total_q, N_CTX, max_seq_len, dim_v):
             O: T.Tensor(shape, dtype),  # type: ignore
             dO: T.Tensor(shape, dtype),  # type: ignore
             cu_seqlens_q: T.Tensor([batch + 1], "int32"),  # type: ignore
-            Delta: T.Tensor([heads, N_CTX * batch], accum_dtype),  # type: ignore
+            Delta: T.Tensor([batch, heads, N_CTX], accum_dtype),  # type: ignore
     ):
         with T.Kernel(heads, T.ceildiv(max_seq_len, blk), batch) as (bx, by, bz):
             o = T.alloc_fragment([blk, blk], dtype)
@@ -187,7 +187,7 @@ def flashattn_bwd_preprocess(batch, heads, total_q, N_CTX, max_seq_len, dim_v):
 
             for i in T.Parallel(blk):
                 if by * blk + i < q_current_seqlen:
-                    Delta[bx, q_start_idx + by * blk + i] = delta[i]
+                    Delta[bz, bx, by * blk + i] = delta[i]
 
     return flash_bwd_prep
 
@@ -424,8 +424,8 @@ def flashattn_bwd_split(batch,
             K: T.Tensor(k_shape, dtype),  # type: ignore
             V: T.Tensor(v_shape, dtype),  # type: ignore
             dO: T.Tensor(do_shape, dtype),  # type: ignore
-            lse: T.Tensor([heads, N_CTX * batch], accum_dtype),  # type: ignore
-            Delta: T.Tensor([heads, N_CTX * batch], accum_dtype),  # type: ignore
+            lse: T.Tensor([batch, heads, N_CTX], accum_dtype),  # type: ignore
+            Delta: T.Tensor([batch, heads, N_CTX], accum_dtype),  # type: ignore
             cu_seqlens_q: T.Tensor([batch + 1], "int32"),  # type: ignore
             cu_seqlens_k: T.Tensor([batch + 1], "int32"),  # type: ignore
             dQ: T.Tensor(q_shape, accum_dtype),  # type: ignore
@@ -497,12 +497,12 @@ def flashattn_bwd_split(batch,
                 T.gemm(V_shared, do, dsT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
 
                 # TODO The SIMT copy occupy too many register resource, should be replaced by TMA
-                # T.copy(lse[bx, q_start_idx + k_base * block_N:q_start_idx + (k_base + 1) * block_N], lse_shared)
-                for i in T.Parallel(block_N):
-                    if k_base * block_N + i < q_current_seqlen:
-                        lse_shared[i] = lse[bx, q_start_idx + k_base * block_N + i]
-                    else:
-                        lse_shared[i] = 0.0
+                T.copy(lse[bz, bx, k_base * block_N:(k_base + 1) * block_N], lse_shared)
+                # for i in T.Parallel(block_N):
+                #     if k_base * block_N + i < q_current_seqlen:
+                #         lse_shared[i] = lse[bx, q_start_idx + k_base * block_N + i]
+                #     else:
+                #         lse_shared[i] = 0.0
                 for i, j in T.Parallel(block_M, block_N):
                     qkT[i, j] = T.exp2(qkT[i, j] * scale - lse_shared[j])
                 if is_causal:
@@ -519,13 +519,12 @@ def flashattn_bwd_split(batch,
                 T.copy(qkT, qkT_cast)
                 T.gemm(qkT_cast, do, dv, policy=T.GemmWarpPolicy.FullRow)
 
-                # T.copy(Delta[bx, q_start_idx + k_base * block_N:q_start_idx + (k_base + 1) * block_N], delta)
-                for i in T.Parallel(block_N):
-                    # delta[i] = Delta[q_start_idx + k_base * block_N + i, bx]
-                    if k_base * block_N + i < q_current_seqlen:
-                        delta[i] = Delta[bx, q_start_idx + k_base * block_N + i]
-                    else:
-                        delta[i] = 0.0
+                T.copy(Delta[bz, bx, k_base * block_N:(k_base + 1) * block_N], delta)
+                # for i in T.Parallel(block_N):
+                #     if k_base * block_N + i < q_current_seqlen:
+                #         delta[i] = Delta[bx, q_start_idx + k_base * block_N + i]
+                #     else:
+                #         delta[i] = 0.0
 
                 for i, j in T.Parallel(block_M, block_N):
                     dsT_cast[i, j] = qkT[i, j] * (dsT[i, j] - delta[j]) * sm_scale
