@@ -265,8 +265,8 @@ def flashattn_bwd_atomic_add(batch,
             K: T.Tensor(k_shape, dtype),  # type: ignore
             V: T.Tensor(v_shape, dtype),  # type: ignore
             dO: T.Tensor(do_shape, dtype),  # type: ignore
-            lse: T.Tensor([total_q, heads], accum_dtype),  # type: ignore
-            Delta: T.Tensor([total_q, heads], accum_dtype),  # type: ignore
+            lse: T.Tensor([batch, heads, N_CTX], accum_dtype),  # type: ignore
+            Delta: T.Tensor([batch, heads, N_CTX], accum_dtype),  # type: ignore
             cu_seqlens_q: T.Tensor([batch + 1], "int32"),  # type: ignore
             cu_seqlens_k: T.Tensor([batch + 1], "int32"),  # type: ignore
             dQ: T.Tensor(q_shape, accum_dtype),  # type: ignore
@@ -304,13 +304,8 @@ def flashattn_bwd_atomic_add(batch,
                 K_shared: tilelang.layout.make_swizzled_layout(K_shared),
             })
 
-            for i, d in T.Parallel(block_M, dim_qk):
-                if by * block_M + i < k_current_seqlen:
-                    K_shared[i, d] = K[k_start_idx + by * block_M + i, bx // groups, d]
-                    V_shared[i, d] = V[k_start_idx + by * block_M + i, bx // groups, d]
-                else:
-                    K_shared[i, d] = 0.0
-                    V_shared[i, d] = 0.0
+            T.copy(K[k_start_idx + by * block_M:k_start_idx + (by + 1) * block_M, bx // groups, :], K_shared)
+            T.copy(V[k_start_idx + by * block_M:k_start_idx + (by + 1) * block_M, bx // groups, :], V_shared)
 
             T.clear(dv)
             T.clear(dk)
@@ -319,18 +314,10 @@ def flashattn_bwd_atomic_add(batch,
             loop_ed = T.ceildiv(q_current_seqlen, block_N)
 
             for k_base in T.Pipelined(loop_st, loop_ed, num_stages=num_stages):
-                for i, d in T.Parallel(block_N, dim_qk):
-                    if k_base * block_N + i < q_current_seqlen:
-                        q[i, d] = Q[q_start_idx + k_base * block_N + i, bx, d]
-                    else:
-                        q[i, d] = 0.0
+                T.copy(Q[q_start_idx + k_base * block_N:q_start_idx + (k_base + 1) * block_N, bx, :], q)
                 T.clear(qkT)
                 T.gemm(K_shared, q, qkT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
-                for i in T.Parallel(block_N):
-                    if k_base * block_N + i < q_current_seqlen:
-                        lse_shared[i] = lse[q_start_idx + k_base * block_N + i, bx]
-                    else:
-                        lse_shared[i] = 0.0
+                T.copy(lse[bz, bx, k_base * block_N:(k_base + 1) * block_N], lse_shared)
 
                 for i, j in T.Parallel(block_M, block_N):
                     qkT[i, j] = T.exp2(qkT[i, j] * scale - lse_shared[j])
@@ -346,22 +333,14 @@ def flashattn_bwd_atomic_add(batch,
                             by * block_M + i < k_current_seqlen and
                             k_base * block_N + j < q_current_seqlen, qkT[i, j], 0)
 
-                for i, d in T.Parallel(block_N, dim_v):
-                    if k_base * block_N + i < q_current_seqlen:
-                        do[i, d] = dO[q_start_idx + k_base * block_N + i, bx, d]
-                    else:
-                        do[i, d] = 0.0
+                T.copy(dO[q_start_idx + k_base * block_N:q_start_idx + (k_base + 1) * block_N, bx, :], do)
                 T.clear(dsT)
                 # dsT: (block_kv, block_q)
                 T.gemm(V_shared, do, dsT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
                 T.copy(qkT, qkT_cast)
                 T.gemm(qkT_cast, do, dv, policy=T.GemmWarpPolicy.FullRow)
 
-                for i in T.Parallel(block_N):
-                    if k_base * block_N + i < q_current_seqlen:
-                        delta[i] = Delta[q_start_idx + k_base * block_N + i, bx]
-                    else:
-                        delta[i] = 0.0
+                T.copy(Delta[bz, bx, k_base * block_N:(k_base + 1) * block_N], delta)
                 for i, j in T.Parallel(block_M, block_N):
                     dsT_cast[i, j] = qkT[i, j] * (dsT[i, j] - delta[j]) * sm_scale
                 T.gemm(dsT_cast, q, dk, policy=T.GemmWarpPolicy.FullRow)
@@ -373,18 +352,18 @@ def flashattn_bwd_atomic_add(batch,
                     dQ[q_start_idx + k_base * block_N:q_start_idx + k_base * block_N + block_N,
                        bx, :],
                     dq,
-                    memory_order="release")
+                    memory_order="relaxed")
 
             T.atomic_add(
                 dV[k_start_idx + by * block_M:k_start_idx + by * block_M + block_M,
                    bx // groups, :],
                 dv,
-                memory_order="release")
+                memory_order="relaxed")
             T.atomic_add(
                 dK[k_start_idx + by * block_M:k_start_idx + by * block_M + block_M,
                    bx // groups, :],
                 dk,
-                memory_order="release")
+                memory_order="relaxed")
 
     return flash_bwd
 
@@ -786,7 +765,7 @@ if __name__ == "__main__":
         use_atomic = True
     else:
         # Default: use split
-        use_atomic = False
+        use_atomic = True
 
     main(args.batch, args.h, args.n_ctx, args.d_head_qk, args.d_head_v, args.groups, args.causal,
          use_atomic)
