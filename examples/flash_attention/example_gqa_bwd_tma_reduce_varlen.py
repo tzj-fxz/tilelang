@@ -759,7 +759,10 @@ def main(BATCH: int = 1,
     torch.testing.assert_close(dQ, dQ_ref, rtol=1e-2, atol=1e-2)
     torch.testing.assert_close(dK, dK_ref, rtol=1e-2, atol=1e-2)
     torch.testing.assert_close(dV, dV_ref, rtol=1e-2, atol=1e-2)
-    print('All checks passed.✅')
+    print("All checks passed.✅")
+    print(
+        "Note: this varlen kernel performance is as good as the non-varlen kernel shown in Nsight-Compute. As you may observe that the TFLOPS is a bit lower, that's because the unpad operation is included in the above benchmark."
+    )
 
 
 if __name__ == "__main__":
