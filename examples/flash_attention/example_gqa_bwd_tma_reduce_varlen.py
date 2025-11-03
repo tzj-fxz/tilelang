@@ -480,29 +480,18 @@ def flashattn_bwd_split(batch,
             loop_ed = T.ceildiv(q_current_seqlen, block_N)
 
             for k_base in T.Pipelined(loop_st, loop_ed, num_stages=num_stages):
+                # Note: The padding zero of varlen should be considered in T.copy
                 T.copy(Q[q_start_idx + k_base * block_N:q_start_idx + (k_base + 1) * block_N, bx, :], q)
-                # for i, d in T.Parallel(block_N, dim_qk):
-                #     if k_base * block_N + i >= q_current_seqlen:
-                #         q[i, d] = 0.0
 
                 T.clear(qkT)
                 T.gemm(K_shared, q, qkT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
 
                 T.copy(dO[q_start_idx + k_base * block_N:q_start_idx + (k_base + 1) * block_N, bx, :], do)
-                # for i, d in T.Parallel(block_N, dim_v):
-                #     if k_base * block_N + i >= q_current_seqlen:
-                #         do[i, d] = 0.0
 
                 T.clear(dsT)
                 T.gemm(V_shared, do, dsT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
 
-                # TODO The SIMT copy occupy too many register resource, should be replaced by TMA
                 T.copy(lse[bz, bx, k_base * block_N:(k_base + 1) * block_N], lse_shared)
-                # for i in T.Parallel(block_N):
-                #     if k_base * block_N + i < q_current_seqlen:
-                #         lse_shared[i] = lse[bx, q_start_idx + k_base * block_N + i]
-                #     else:
-                #         lse_shared[i] = 0.0
                 for i, j in T.Parallel(block_M, block_N):
                     qkT[i, j] = T.exp2(qkT[i, j] * scale - lse_shared[j])
                 if is_causal:
@@ -520,11 +509,6 @@ def flashattn_bwd_split(batch,
                 T.gemm(qkT_cast, do, dv, policy=T.GemmWarpPolicy.FullRow)
 
                 T.copy(Delta[bz, bx, k_base * block_N:(k_base + 1) * block_N], delta)
-                # for i in T.Parallel(block_N):
-                #     if k_base * block_N + i < q_current_seqlen:
-                #         delta[i] = Delta[bx, q_start_idx + k_base * block_N + i]
-                #     else:
-                #         delta[i] = 0.0
 
                 for i, j in T.Parallel(block_M, block_N):
                     dsT_cast[i, j] = qkT[i, j] * (dsT[i, j] - delta[j]) * sm_scale
@@ -538,7 +522,7 @@ def flashattn_bwd_split(batch,
                         T.atomic_add(
                             dQ[q_start_idx + k_base * block_N + i, bx, j],
                             dq[i, j],
-                            memory_order="release")
+                            memory_order="relaxed")
 
             T.copy(dv, dv_shared)
             for i, d in T.Parallel(block_M, dim_v):
@@ -771,9 +755,9 @@ def main(BATCH: int = 1,
     print("tilelang: {:.2f} TFlops".format(total_flops / latency * 1e-9))
 
     torch.testing.assert_close(O, O_ref.half(), rtol=1e-2, atol=1e-2)
+    torch.testing.assert_close(dQ, dQ_ref, rtol=1e-2, atol=1e-2)
     torch.testing.assert_close(dK, dK_ref, rtol=1e-2, atol=1e-2)
     torch.testing.assert_close(dV, dV_ref, rtol=1e-2, atol=1e-2)
-    torch.testing.assert_close(dQ, dQ_ref, rtol=1e-2, atol=1e-2)
     print('All checks passed.✅')
 
 
