@@ -9,6 +9,7 @@ from bert_padding import pad_input, unpad_input
 
 # tilelang.disable_cache()
 
+
 def generate_random_padding_mask(max_seqlen, batch_size, device, mode="random"):
     assert mode in ["full", "random", "third"]
     if mode == "full":
@@ -304,17 +305,23 @@ def flashattn_bwd_atomic_add(batch,
                 K_shared: tilelang.layout.make_swizzled_layout(K_shared),
             })
 
-            T.copy(K[k_start_idx + by * block_M:k_start_idx + (by + 1) * block_M, bx // groups, :], K_shared)
-            T.copy(V[k_start_idx + by * block_M:k_start_idx + (by + 1) * block_M, bx // groups, :], V_shared)
+            T.copy(K[k_start_idx + by * block_M:k_start_idx + (by + 1) * block_M, bx // groups, :],
+                   K_shared)
+            T.copy(V[k_start_idx + by * block_M:k_start_idx + (by + 1) * block_M, bx // groups, :],
+                   V_shared)
 
             T.clear(dv)
             T.clear(dk)
 
-            loop_st = T.min(T.floordiv(by * block_M, block_N), T.floordiv(q_current_seqlen, block_N)) if is_causal else 0
+            loop_st = T.min(
+                T.floordiv(by * block_M, block_N), T.floordiv(q_current_seqlen,
+                                                              block_N)) if is_causal else 0
             loop_ed = T.ceildiv(q_current_seqlen, block_N)
 
             for k_base in T.Pipelined(loop_st, loop_ed, num_stages=num_stages):
-                T.copy(Q[q_start_idx + k_base * block_N:q_start_idx + (k_base + 1) * block_N, bx, :], q)
+                T.copy(
+                    Q[q_start_idx + k_base * block_N:q_start_idx + (k_base + 1) * block_N, bx, :],
+                    q)
                 T.clear(qkT)
                 T.gemm(K_shared, q, qkT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
                 T.copy(lse[bz, bx, k_base * block_N:(k_base + 1) * block_N], lse_shared)
@@ -333,7 +340,9 @@ def flashattn_bwd_atomic_add(batch,
                             by * block_M + i < k_current_seqlen and
                             k_base * block_N + j < q_current_seqlen, qkT[i, j], 0)
 
-                T.copy(dO[q_start_idx + k_base * block_N:q_start_idx + (k_base + 1) * block_N, bx, :], do)
+                T.copy(
+                    dO[q_start_idx + k_base * block_N:q_start_idx + (k_base + 1) * block_N, bx, :],
+                    do)
                 T.clear(dsT)
                 # dsT: (block_kv, block_q)
                 T.gemm(V_shared, do, dsT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
@@ -370,7 +379,7 @@ def flashattn_bwd_atomic_add(batch,
 
 @tilelang.jit(pass_configs={
     tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
-},debug_root_path="./examples/flash_attention/")
+})
 def flashattn_bwd_split(batch,
                         total_q,
                         total_kv,
@@ -444,28 +453,30 @@ def flashattn_bwd_split(batch,
                 dk_shared: tilelang.layout.make_swizzled_layout(dk_shared),
             })
 
-            # T.clear(K_shared)
-            # T.clear(V_shared)
-            T.copy(K[k_start_idx + by * block_M:k_start_idx + (by + 1) * block_M, bx // groups, :], K_shared)
-            T.copy(V[k_start_idx + by * block_M:k_start_idx + (by + 1) * block_M, bx // groups, :], V_shared)
-            # for i, d in T.Parallel(block_M, dim_qk):
-            #     if by * block_M + i >= k_current_seqlen:
-            #         K_shared[i, d] = 0
-            #         V_shared[i, d] = 0
+            T.copy(K[k_start_idx + by * block_M:k_start_idx + (by + 1) * block_M, bx // groups, :],
+                   K_shared)
+            T.copy(V[k_start_idx + by * block_M:k_start_idx + (by + 1) * block_M, bx // groups, :],
+                   V_shared)
 
             T.clear(dv)
             T.clear(dk)
-            loop_st = T.min(T.floordiv(by * block_M, block_N), T.floordiv(q_current_seqlen, block_N)) if is_causal else 0
+            loop_st = T.min(
+                T.floordiv(by * block_M, block_N), T.floordiv(q_current_seqlen,
+                                                              block_N)) if is_causal else 0
             loop_ed = T.ceildiv(q_current_seqlen, block_N)
 
             for k_base in T.Pipelined(loop_st, loop_ed, num_stages=num_stages):
                 # Note: The padding zero of varlen should be considered in T.copy
-                T.copy(Q[q_start_idx + k_base * block_N:q_start_idx + (k_base + 1) * block_N, bx, :], q)
+                T.copy(
+                    Q[q_start_idx + k_base * block_N:q_start_idx + (k_base + 1) * block_N, bx, :],
+                    q)
 
                 T.clear(qkT)
                 T.gemm(K_shared, q, qkT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
 
-                T.copy(dO[q_start_idx + k_base * block_N:q_start_idx + (k_base + 1) * block_N, bx, :], do)
+                T.copy(
+                    dO[q_start_idx + k_base * block_N:q_start_idx + (k_base + 1) * block_N, bx, :],
+                    do)
 
                 T.clear(dsT)
                 T.gemm(V_shared, do, dsT, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
@@ -546,8 +557,8 @@ class _attention(torch.autograd.Function):
         total_q = q_unpad.shape[0]
         total_kv = k_unpad.shape[0]
 
-        mod = flashattn_fwd(BATCH, total_q, total_kv, N_CTX, H, max_seqlen_q, D_HEAD_QK, D_HEAD_V, causal,
-                            block_M, block_N, groups)
+        mod = flashattn_fwd(BATCH, total_q, total_kv, N_CTX, H, max_seqlen_q, D_HEAD_QK, D_HEAD_V,
+                            causal, block_M, block_N, groups)
         o_unpad, lse = mod(q_unpad, k_unpad, v_unpad, cu_seqlens_q, cu_seqlens_k)
         o = pad_input(o_unpad, indices_q, BATCH, N_CTX)
         ctx.save_for_backward(q_unpad, k_unpad, v_unpad, o_unpad, lse, seqlens_q, seqlens_k,

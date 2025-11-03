@@ -5,6 +5,8 @@ import tilelang.language as T
 from tilelang.contrib import nvcc
 import argparse
 
+tilelang.disable_cache()
+
 
 @tilelang.jit(
     out_idx=[3, 4], pass_configs={
@@ -267,17 +269,17 @@ def flashattn_bwd_atomic_add(batch,
 @tilelang.jit(pass_configs={
     tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True,
 })
-def flashattn_bwd_split(batch,
-                        heads,
-                        seq_len,
-                        dim_qk,
-                        dim_v,
-                        is_causal,
-                        block_M,
-                        block_N,
-                        threads=256,
-                        num_stages=2,
-                        groups=1):
+def flashattn_bwd_split_novarlen(batch,
+                                 heads,
+                                 seq_len,
+                                 dim_qk,
+                                 dim_v,
+                                 is_causal,
+                                 block_M,
+                                 block_N,
+                                 threads=256,
+                                 num_stages=2,
+                                 groups=1):
     sm_scale = (1.0 / dim_qk)**0.5
     scale = (1.0 / dim_qk)**0.5 * 1.44269504  # log2(e)
     head_kv = heads // groups
@@ -426,7 +428,7 @@ class _attention(torch.autograd.Function):
             kernel(q, k, v, do, lse, delta, dq, dk, dv)
             dq, dk, dv = mod_post(dq, dk, dv)
         else:
-            kernel = flashattn_bwd_split(
+            kernel = flashattn_bwd_split_novarlen(
                 BATCH,
                 H,
                 N_CTX,
