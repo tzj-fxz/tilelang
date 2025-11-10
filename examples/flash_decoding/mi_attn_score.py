@@ -8,6 +8,7 @@ import time
 import numpy as np
 import tilelang
 import tilelang.language as T
+from tilelang.autotuner import autotune
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     """
@@ -188,11 +189,32 @@ def _fwd_kernel_varlen(
             mask=mask_h[:, None])
 
 
+
+def get_configs():
+    import itertools
+    block_N = [64, 128]
+    block_H = [64]
+    num_split = [1]
+    num_stages = [1, 2, 3]
+    threads = [128]
+    _configs = list(itertools.product(block_N, block_H, num_split, num_stages, threads))
+
+    configs = [{
+        'block_N': c[0],
+        'block_H': c[1],
+        'num_split': c[2],
+        'num_stages': c[3],
+        'threads': c[4]
+    } for c in _configs]
+    return configs
+
+
+@autotune(configs=get_configs(), warmup=10, rep=10)
 @tilelang.jit(
     out_idx=[-2, -1],
     debug_root_path="./examples/flash_decoding"
 )
-def flashattn(batch, heads, k_heads, max_seqlen_kv, total_seqlen_k, dim, block_N, block_H, num_split, num_stages,
+def flashattn(batch, heads, k_heads, max_seqlen_kv, total_seqlen_k, dim, has_sink, block_N, block_H, num_split, num_stages,
               threads):
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
     shape_q = [batch, heads, dim]
@@ -216,6 +238,7 @@ def flashattn(batch, heads, k_heads, max_seqlen_kv, total_seqlen_k, dim, block_N
             V: T.Tensor(shape_v, dtype),
             cu_seqlens_k: T.Tensor([batch+1], "int32"),
             mask: T.Tensor([total_seqlen_k, k_heads], "uint8"),
+            s_aux: T.Tensor([heads], "float32"),
             Output: T.Tensor([batch, heads, dim], dtype),
             S: T.Tensor(shape_s, dtype),
     ):
@@ -234,6 +257,7 @@ def flashattn(batch, heads, k_heads, max_seqlen_kv, total_seqlen_k, dim, block_N
             scores_sum = T.alloc_fragment([block_H], accum_dtype)
             logsum = T.alloc_fragment([block_H], accum_dtype)
             S_shared = T.alloc_shared([block_H, math.ceil(max_seqlen_kv / block_N)], dtype)
+            s_aux_shared = T.alloc_shared([block_H], "float32")
 
             bid = bx
             hid = by
@@ -279,6 +303,11 @@ def flashattn(batch, heads, k_heads, max_seqlen_kv, total_seqlen_k, dim, block_N
                     acc_o[i, j] *= scores_scale[i]
                 T.copy(V[cur_start_k + k * block_N:cur_start_k + (k + 1) * block_N, cur_kv_head, :], V_shared)
                 T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
+            
+            if has_sink:
+                T.copy(s_aux[hid * valid_block_H:hid * valid_block_H + block_H], s_aux_shared)
+                for i in T.Parallel(block_H):
+                    logsum[i] += s_aux_shared[i]
             for i, j in T.Parallel(block_H, dim):
                 acc_o[i, j] /= logsum[i]
             for h, k in T.Parallel(block_H, loop_range):
@@ -296,15 +325,65 @@ def flashattn(batch, heads, k_heads, max_seqlen_kv, total_seqlen_k, dim, block_N
             V: T.Tensor(shape_v, dtype),
             cu_seqlens_k: T.Tensor([batch+1], "int32"),
             mask: T.Tensor([total_seqlen_k, k_heads], "uint8"),
+            s_aux: T.Tensor([heads], "float32"),
             glse: T.Tensor([batch, heads, num_split], dtype),
             Output_partial: T.Tensor(part_shape, dtype),
             Output: T.Tensor(shape_o, dtype),
             S: T.Tensor(shape_s, dtype),
     ):
-        flash_attn(Q, K, V, cu_seqlens_k, mask, Output, S)
+        flash_attn(Q, K, V, cu_seqlens_k, mask, s_aux, Output, S)
 
     # TODO: split version
     return flashattn_gqa_decode_no_split
+
+
+def flash_attn_with_attn_pool_decode_tilelang(
+    Q: torch.Tensor, ## [tq = b, q_h, q_dim]
+    K: torch.Tensor, ## [tk, k_h, k_dim]
+    V: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    max_seqlen_k: int,
+    real_max_k_seqlen: int,
+    num_split: int,
+    softmax_scale: float,
+    s_aux: torch.Tensor = None,
+    block_size: int = 64,
+    use_per_kv_head_sparse_index: bool = False,
+    tl_kernel = None,
+):
+    num_tokens, q_h, head_size = Q.shape
+    batch = cu_seqlens_k.size(0) - 1
+    k_h = K.size(1)
+
+    assert Q.dim() == K.dim() == 3
+    assert Q.size(2) == K.size(2)
+    assert cu_seqlens_k.dim() == 1
+    assert head_size in {64, 128, 256}
+    assert Q.is_contiguous()
+    assert K.is_contiguous()
+    assert V.is_contiguous()
+
+
+    gqa_group_size = q_h // k_h
+
+
+    BLOCK_D = head_size
+    BLOCK_N = block_size
+    BLOCK_H = 64
+
+    O_tl = torch.zeros_like(Q)
+    S_tl = torch.zeros((batch, q_h, math.ceil(real_max_k_seqlen / block_size)), dtype=Q.dtype, device=Q.device)
+    mask = torch.ones((cu_seqlens_k[-1].item(), k_h), dtype=torch.uint8, device=Q.device)
+    glse = torch.empty(batch, q_h, num_split, dtype=Q.dtype, device=Q.device)
+    Output_partial = torch.empty(batch, q_h, num_split, head_size, dtype=Q.dtype, device=Q.device)
+    O_tl, S_tl = tl_kernel(Q, K, V, cu_seqlens_k, mask, s_aux, glse, Output_partial)
+
+    if use_per_kv_head_sparse_index:
+        S_tl = torch.max_pool2d(S_tl, kernel_size=(gqa_group_size, 1), stride=(gqa_group_size, 1))
+    else:
+        S_tl = torch.max_pool2d(S_tl, kernel_size=(q_h, 1), stride=(q_h, 1))
+
+    return O_tl, S_tl
 
 
 def flash_attn_with_attn_pool_decode(
@@ -342,8 +421,6 @@ def flash_attn_with_attn_pool_decode(
 
     O = torch.zeros_like(Q)
     S = torch.zeros((batch, q_h, math.ceil(max_seqlen_k / block_size)), dtype=Q.dtype, device=Q.device)
-    print(f"S shape: {S.shape}")
-    print(f"O shape: {O.shape}")
     grid = lambda META: (batch, k_h)
 
 
@@ -363,26 +440,12 @@ def flash_attn_with_attn_pool_decode(
             BLOCK_D = BLOCK_D,
         )
 
-    O_tl = torch.zeros_like(Q)
-    S_tl = torch.zeros((batch, q_h, math.ceil(real_max_k_seqlen / block_size)), dtype=Q.dtype, device=Q.device)
-    print(f"S_tl shape: {S_tl.shape}")
-    print(f"O_tl shape: {O_tl.shape}")
-    mask = torch.ones((cu_seqlens_k[-1].item(), k_h), dtype=torch.uint8, device=Q.device)
-    glse = torch.empty(batch, q_h, num_split, dtype=Q.dtype, device=Q.device)
-    Output_partial = torch.empty(batch, q_h, num_split, head_size, dtype=Q.dtype, device=Q.device)
-    tl_kernel = flashattn(batch, q_h, k_h, real_max_k_seqlen, cu_seqlens_k[-1].item(), head_size, BLOCK_N, BLOCK_H, num_split, 1, 128)
-    O_tl, S_tl = tl_kernel(Q, K, V, cu_seqlens_k, mask, glse, Output_partial)
-    print(f"S_tl shape: {S_tl.shape}")
-    print(f"O_tl shape: {O_tl.shape}")
-
     if use_per_kv_head_sparse_index:
         S = torch.max_pool2d(S, kernel_size=(gqa_group_size, 1), stride=(gqa_group_size, 1))
-        S_tl = torch.max_pool2d(S_tl, kernel_size=(gqa_group_size, 1), stride=(gqa_group_size, 1))
     else:
         S = torch.max_pool2d(S, kernel_size=(q_h, 1), stride=(q_h, 1))
-        S_tl = torch.max_pool2d(S_tl, kernel_size=(q_h, 1), stride=(q_h, 1))
 
-    return O, S, O_tl, S_tl
+    return O, S
 
 
 def test_equal_seqlen_decode_main(args):
@@ -503,13 +566,14 @@ def test_varlen_decode_main(args):
     
     # Generate sink values if needed
     sink = None
+    has_sink = False
     if args.test_sink:
+        has_sink = True
         sink = torch.randn(q_heads, device='cuda', dtype=torch.float32) * 0.1  # Small sink values
         print(f"Using sink attention with sink values: {sink}")
     
     # Generate variable length k sequences
     k_seqlens = torch.randint(max_k_seqlen // 4, max_k_seqlen + 1, size=(batch_size,))
-    # k_seqlens = torch.full((batch_size,), max_k_seqlen, dtype=torch.int32, device='cuda')
     print(f"k_seqlens: {k_seqlens}")
     
     # Generate cumulative sequence lengths for k
@@ -535,8 +599,13 @@ def test_varlen_decode_main(args):
     print(f"k_varlen shape: {k_varlen.shape}")
     print(f"v_varlen shape: {v_varlen.shape}")
     
+    num_tokens, q_h, head_size = q_decode.shape
+    batch = cu_seqlens_k.size(0) - 1
+    k_h = k_varlen.size(1)
+    tl_kernel = flashattn(batch, q_h, k_h, args.k_seqlen, cu_seqlens_k[-1].item(), head_size, has_sink)
+
     # Test our decode kernel
-    O_triton, S_triton, O_tilelang, S_tilelang = flash_attn_with_attn_pool_decode(
+    O_triton, S_triton = flash_attn_with_attn_pool_decode(
         q_decode,
         k_varlen,
         v_varlen,
@@ -547,6 +616,19 @@ def test_varlen_decode_main(args):
         softmax_scale,
         s_aux=sink,
         block_size=block_size
+    )
+    O_tilelang, S_tilelang = flash_attn_with_attn_pool_decode_tilelang(
+        q_decode,
+        k_varlen,
+        v_varlen,
+        cu_seqlens_k,
+        max_seqlen_k,
+        real_max_k_seqlen,
+        args.num_split,
+        softmax_scale,
+        s_aux=sink,
+        block_size=block_size,
+        tl_kernel=tl_kernel,
     )
     for i in range(batch_size):
         S_tilelang[i, :, math.ceil((cu_seqlens_k[i+1].item() - cu_seqlens_k[i].item()) / block_size):] = 0
@@ -638,7 +720,7 @@ def test_varlen_decode_main(args):
         kernel_size=(q_heads, block_size), 
         stride=(q_heads, block_size), 
         ceil_mode=True
-    )  # [b, 1, ceil(max_seqlen/block_size)]
+    ).to(dtype=torch.float16)  # [b, 1, ceil(max_seqlen/block_size)]
     
     print(f"O_triton shape: {O_triton.shape}")
     print(f"O_tilelang shape: {O_tilelang.shape}")
@@ -664,6 +746,31 @@ def test_varlen_decode_main(args):
     assert torch.allclose(S_tilelang[:, :, :math.ceil(max_seqlen_k / block_size)], attn_score_pooled, atol=1e-2, rtol=1e-2), f"Score mismatch: {max_diff_s_tl.item()}"
 
     print("✅ All tests passed!")
+
+
+def do_bench(fn, *args, warmup=10, rep=10, **kwargs):
+    """
+    Do benchmark for a function.
+    """
+    start_event = [torch.cuda.Event(enable_timing=True) for i in range(rep)]
+    end_event = [torch.cuda.Event(enable_timing=True) for i in range(rep)]
+    for _ in range(warmup):
+        fn(*args, **kwargs)
+
+    torch.cuda.synchronize()
+    for i in range(rep):
+        start_event[i].record()
+        fn(*args, **kwargs)
+        end_event[i].record()
+    torch.cuda.synchronize()
+
+    # Record clocks
+    times = torch.tensor(
+        [s.elapsed_time(e) for s, e in zip(start_event, end_event)],
+        dtype=torch.float,
+    )
+
+    return times.mean().item()
 
 
 def speed_benchmark_decode_comparison(args):
@@ -723,48 +830,59 @@ def speed_benchmark_decode_comparison(args):
         print(f"  K sequence lengths: {k_seqlens.tolist()}")
     
     # Warmup
-    for i in range(10):
-        _ = flash_attn_with_attn_pool_decode(
-            q_decode,
-            k_varlen,
-            v_varlen,
-            cu_seqlens_k,
-            max_seqlen_k,
-            softmax_scale,
-            s_aux=sink,
-            block_size=block_size
-        )
-    
+    num_tokens, q_h, head_size = q_decode.shape
+    batch = cu_seqlens_k.size(0) - 1
+    k_h = k_varlen.size(1)
+    tl_kernel = flashattn(batch, q_h, k_h, args.k_seqlen, cu_seqlens_k[-1].item(), head_size)
+    qk_flops = 2 * q_h * cu_seqlens_k[-1].item() * head_size
+    pv_flops = 2 * q_h * cu_seqlens_k[-1].item() * head_size
+    total_flops = qk_flops + pv_flops
+
     # Benchmark
-    print("⚡ Benchmarking decode kernel (100 iterations)...")
-    torch.cuda.synchronize()
-    begin = time.perf_counter()
-    
-    for i in range(100):
-        _ = flash_attn_with_attn_pool_decode(
-            q_decode,
-            k_varlen,
-            v_varlen,
-            cu_seqlens_k,
-            max_seqlen_k,
-            softmax_scale,
-            s_aux=sink,
-            block_size=block_size
-        )
-    
-    torch.cuda.synchronize()
-    end = time.perf_counter()
-    decode_time = (end - begin) / 100
-    
-    print(f"Average decode kernel time: {decode_time*1000:.3f} ms")
+    print("⚡ Benchmarking Tilelang kernel (100 iterations)...")
+    tilelang_time = do_bench(
+        flash_attn_with_attn_pool_decode_tilelang,
+        q_decode,
+        k_varlen,
+        v_varlen,
+        cu_seqlens_k,
+        max_seqlen_k,
+        args.k_seqlen,
+        1,
+        softmax_scale,
+        sink,
+        block_size,
+        False,
+        tl_kernel,
+    )
 
+    print(f"Average decode kernel time Tilelang: {tilelang_time:.3f} ms")
+    print(f"Tilelang TFLOPS: {total_flops / tilelang_time * 1e-9}")
 
+    # Benchmark
+    print("⚡ Benchmarking Triton kernel (100 iterations)...")
+    triton_time = do_bench(
+        flash_attn_with_attn_pool_decode,
+        q_decode,
+        k_varlen,
+        v_varlen,
+        cu_seqlens_k,
+        max_seqlen_k,
+        args.k_seqlen,
+        1,
+        softmax_scale,
+        sink,
+        block_size
+    )
+
+    print(f"Average decode kernel time Triton: {triton_time:.3f} ms")
+    print(f"Triton TFLOPS: {total_flops / triton_time * 1e-9}")
 
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Flash Attention Decode with Attention Pooling')
-    parser.add_argument('--batch_size', type=int, default=4, help='Batch size')
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
     parser.add_argument('--q_heads', type=int, default=32, help='Number of query heads')
     parser.add_argument('--kv_heads', type=int, default=8, help='Number of key-value heads')
     parser.add_argument('--k_seqlen', type=int, default=8192, help='Key sequence length')
@@ -777,6 +895,7 @@ if __name__ == "__main__":
     parser.add_argument('--num_split', type=int, default=1, choices=[1, 16], help='Number of splits')
     args = parser.parse_args()
     args.benchmark = False
+    args.test_sink = True
     args.test_varlen = True
     args.dtype = 'float16'
     args.num_split = 1
