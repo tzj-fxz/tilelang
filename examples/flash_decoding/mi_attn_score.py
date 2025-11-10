@@ -249,7 +249,7 @@ def flashattn(batch, heads, k_heads, max_seqlen_kv, total_seqlen_k, dim, has_sin
             O_shared = T.alloc_shared([valid_block_H, dim], dtype)
             acc_s = T.alloc_fragment([block_H, block_N], accum_dtype)
             acc_s_cast = T.alloc_fragment([block_H, block_N], dtype)
-            mask_local = T.alloc_fragment([block_N], "uint8")
+            # mask_local = T.alloc_fragment([block_N], "uint8")
             acc_o = T.alloc_fragment([block_H, dim], accum_dtype)
             scores_max = T.alloc_fragment([block_H], accum_dtype)
             scores_max_prev = T.alloc_fragment([block_H], accum_dtype)
@@ -258,6 +258,14 @@ def flashattn(batch, heads, k_heads, max_seqlen_kv, total_seqlen_k, dim, has_sin
             logsum = T.alloc_fragment([block_H], accum_dtype)
             S_shared = T.alloc_shared([block_H, math.ceil(max_seqlen_kv / block_N)], dtype)
             s_aux_shared = T.alloc_shared([block_H], "float32")
+
+            T.annotate_layout({
+                Q_shared: tilelang.layout.make_swizzled_layout(Q_shared),
+                K_shared: tilelang.layout.make_swizzled_layout(K_shared),
+                V_shared: tilelang.layout.make_swizzled_layout(V_shared),
+                # O_shared: tilelang.layout.make_swizzled_layout(O_shared),
+                # S_shared: tilelang.layout.make_swizzled_layout(S_shared),
+            })
 
             bid = bx
             hid = by
@@ -276,12 +284,13 @@ def flashattn(batch, heads, k_heads, max_seqlen_kv, total_seqlen_k, dim, has_sin
             loop_range = T.ceildiv((cur_seqlen_k // num_split), block_N)
             for k in T.Pipelined(loop_range, num_stages=num_stages):
                 T.copy(K[cur_start_k + k * block_N:cur_start_k + (k + 1) * block_N, cur_kv_head, :], K_shared)
-                T.copy(mask[cur_start_k + k * block_N:cur_start_k + (k + 1) * block_N, cur_kv_head], mask_local)
+                # T.copy(mask[cur_start_k + k * block_N:cur_start_k + (k + 1) * block_N, cur_kv_head], mask_local)
                 T.clear(acc_s)
                 T.gemm(Q_shared, K_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
                 for i, j in T.Parallel(block_H, block_N):
-                    acc_s[i, j] = T.if_then_else(mask_local[j] != 0 and k * block_N + j < cur_seqlen_k, acc_s[i, j],
-                                                 -T.infinity(accum_dtype))
+                    # acc_s[i, j] = T.if_then_else(mask_local[j] != 0 and k * block_N + j < cur_seqlen_k, acc_s[i, j],
+                    #                              -T.infinity(accum_dtype))
+                    acc_s[i, j] = T.if_then_else(k * block_N + j < cur_seqlen_k, acc_s[i, j], -T.infinity(accum_dtype))
                 T.copy(scores_max, scores_max_prev)
                 T.fill(scores_max, -T.infinity(accum_dtype))
                 T.reduce_max(acc_s, scores_max, dim=1, clear=False)
@@ -485,6 +494,11 @@ def test_equal_seqlen_decode_main(args):
     print(f"k_varlen shape: {k_varlen.shape}")
     print(f"v_varlen shape: {v_varlen.shape}")
     
+    num_tokens, q_h, head_size = q.shape
+    batch = cu_seqlens_k.size(0) - 1
+    k_h = k_varlen.size(1)
+    tl_kernel = flashattn(batch, q_h, k_h, args.k_seqlen, cu_seqlens_k[-1].item(), head_size, args.test_sink)
+
     # Test our decode kernel
     O_triton, S_triton = flash_attn_with_attn_pool_decode(
         q,
@@ -498,6 +512,21 @@ def test_equal_seqlen_decode_main(args):
         s_aux=sink,
         block_size=block_size
     )
+    O_tilelang, S_tilelang = flash_attn_with_attn_pool_decode_tilelang(
+        q,
+        k_varlen,
+        v_varlen,
+        cu_seqlens_k,
+        max_seqlen_k,
+        real_max_k_seqlen,
+        args.num_split,
+        softmax_scale,
+        s_aux=sink,
+        block_size=block_size,
+        tl_kernel=tl_kernel,
+    )
+    for i in range(batch_size):
+        S_tilelang[i, :, math.ceil((cu_seqlens_k[i+1].item() - cu_seqlens_k[i].item()) / block_size):] = 0
     
     # Compute torch reference
     q_expanded = q.unsqueeze(2)  # [b, q_heads, 1, head_size]
@@ -528,23 +557,25 @@ def test_equal_seqlen_decode_main(args):
         kernel_size=(q_heads, block_size), 
         stride=(q_heads, block_size), 
         ceil_mode=True
-    )
+    ).to(torch.float16)
     
-    # print(f"O_triton: {O_triton}")
-    # print(f"O_torch: {O_torch}")
     print("S_triton", S_triton)
     print("attn_score_pooled", attn_score_pooled)
 
 
     max_diff_o = torch.max(torch.abs(O_triton - O_torch))
     max_diff_s = torch.max(torch.abs(S_triton - attn_score_pooled))
+    max_diff_o_tilelang = torch.max(torch.abs(O_tilelang - O_torch))
+    max_diff_s_tilelang = torch.max(torch.abs(S_tilelang - attn_score_pooled))
     
     print(f"Max difference in O: {max_diff_o.item()}")
     print(f"Max difference in S: {max_diff_s.item()}")
-    
+    print(f"Max difference in O_tilelang: {max_diff_o_tilelang.item()}")
+    print(f"Max difference in S_tilelang: {max_diff_s_tilelang.item()}")
     assert torch.allclose(O_triton, O_torch, atol=1e-2, rtol=1e-2), f"Output mismatch: {max_diff_o.item()}"
     assert torch.allclose(S_triton, attn_score_pooled, atol=1e-2, rtol=1e-2), f"Score mismatch: {max_diff_s.item()}"
-    
+    assert torch.allclose(O_tilelang, O_torch, atol=1e-2, rtol=1e-2), f"Output mismatch: {max_diff_o_tilelang.item()}"
+    assert torch.allclose(S_tilelang, attn_score_pooled, atol=1e-2, rtol=1e-2), f"Score mismatch: {max_diff_s_tilelang.item()}"
     print("✅ All tests passed!")
 
 
@@ -566,9 +597,7 @@ def test_varlen_decode_main(args):
     
     # Generate sink values if needed
     sink = None
-    has_sink = False
     if args.test_sink:
-        has_sink = True
         sink = torch.randn(q_heads, device='cuda', dtype=torch.float32) * 0.1  # Small sink values
         print(f"Using sink attention with sink values: {sink}")
     
@@ -602,7 +631,7 @@ def test_varlen_decode_main(args):
     num_tokens, q_h, head_size = q_decode.shape
     batch = cu_seqlens_k.size(0) - 1
     k_h = k_varlen.size(1)
-    tl_kernel = flashattn(batch, q_h, k_h, args.k_seqlen, cu_seqlens_k[-1].item(), head_size, has_sink)
+    tl_kernel = flashattn(batch, q_h, k_h, args.k_seqlen, cu_seqlens_k[-1].item(), head_size, args.test_sink)
 
     # Test our decode kernel
     O_triton, S_triton = flash_attn_with_attn_pool_decode(
@@ -833,7 +862,7 @@ def speed_benchmark_decode_comparison(args):
     num_tokens, q_h, head_size = q_decode.shape
     batch = cu_seqlens_k.size(0) - 1
     k_h = k_varlen.size(1)
-    tl_kernel = flashattn(batch, q_h, k_h, args.k_seqlen, cu_seqlens_k[-1].item(), head_size)
+    tl_kernel = flashattn(batch, q_h, k_h, args.k_seqlen, cu_seqlens_k[-1].item(), head_size, args.test_sink)
     qk_flops = 2 * q_h * cu_seqlens_k[-1].item() * head_size
     pv_flops = 2 * q_h * cu_seqlens_k[-1].item() * head_size
     total_flops = qk_flops + pv_flops
@@ -896,7 +925,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     args.benchmark = False
     args.test_sink = True
-    args.test_varlen = True
+    args.test_varlen = False
     args.dtype = 'float16'
     args.num_split = 1
 
