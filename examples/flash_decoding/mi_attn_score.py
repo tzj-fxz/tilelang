@@ -10,6 +10,9 @@ import tilelang
 import tilelang.language as T
 from tilelang.autotuner import autotune
 
+torch.manual_seed(0)
+tilelang.disable_cache()
+
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     """
     This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,
@@ -214,8 +217,8 @@ def get_configs():
     out_idx=[-2, -1],
     debug_root_path="./examples/flash_decoding"
 )
-def flashattn(batch, heads, k_heads, max_seqlen_kv, total_seqlen_k, dim, has_sink, block_N, block_H, num_split, num_stages,
-              threads):
+def flashattn(batch, heads, k_heads, max_seqlen_kv, total_seqlen_k, dim, has_sink, block_N=64, block_H=64, num_split=1, num_stages=1,
+              threads=128):
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
     shape_q = [batch, heads, dim]
     shape_k = [total_seqlen_k, k_heads, dim]
@@ -237,7 +240,6 @@ def flashattn(batch, heads, k_heads, max_seqlen_kv, total_seqlen_k, dim, has_sin
             K: T.Tensor(shape_k, dtype),
             V: T.Tensor(shape_v, dtype),
             cu_seqlens_k: T.Tensor([batch+1], "int32"),
-            mask: T.Tensor([total_seqlen_k, k_heads], "uint8"),
             s_aux: T.Tensor([heads], "float32"),
             Output: T.Tensor([batch, heads, dim], dtype),
             S: T.Tensor(shape_s, dtype),
@@ -249,7 +251,6 @@ def flashattn(batch, heads, k_heads, max_seqlen_kv, total_seqlen_k, dim, has_sin
             O_shared = T.alloc_shared([valid_block_H, dim], dtype)
             acc_s = T.alloc_fragment([block_H, block_N], accum_dtype)
             acc_s_cast = T.alloc_fragment([block_H, block_N], dtype)
-            # mask_local = T.alloc_fragment([block_N], "uint8")
             acc_o = T.alloc_fragment([block_H, dim], accum_dtype)
             scores_max = T.alloc_fragment([block_H], accum_dtype)
             scores_max_prev = T.alloc_fragment([block_H], accum_dtype)
@@ -257,12 +258,13 @@ def flashattn(batch, heads, k_heads, max_seqlen_kv, total_seqlen_k, dim, has_sin
             scores_sum = T.alloc_fragment([block_H], accum_dtype)
             logsum = T.alloc_fragment([block_H], accum_dtype)
             S_shared = T.alloc_shared([block_H, math.ceil(max_seqlen_kv / block_N)], dtype)
+            # S_fragment = T.alloc_fragment([block_H, math.ceil(max_seqlen_kv / block_N)], accum_dtype)
             s_aux_shared = T.alloc_shared([block_H], "float32")
 
             T.annotate_layout({
-                Q_shared: tilelang.layout.make_swizzled_layout(Q_shared),
-                K_shared: tilelang.layout.make_swizzled_layout(K_shared),
-                V_shared: tilelang.layout.make_swizzled_layout(V_shared),
+                # Q_shared: tilelang.layout.make_swizzled_layout(Q_shared),
+                # K_shared: tilelang.layout.make_swizzled_layout(K_shared),
+                # V_shared: tilelang.layout.make_swizzled_layout(V_shared),
                 # O_shared: tilelang.layout.make_swizzled_layout(O_shared),
                 # S_shared: tilelang.layout.make_swizzled_layout(S_shared),
             })
@@ -284,7 +286,6 @@ def flashattn(batch, heads, k_heads, max_seqlen_kv, total_seqlen_k, dim, has_sin
             loop_range = T.ceildiv((cur_seqlen_k // num_split), block_N)
             for k in T.Pipelined(loop_range, num_stages=num_stages):
                 T.copy(K[cur_start_k + k * block_N:cur_start_k + (k + 1) * block_N, cur_kv_head, :], K_shared)
-                # T.copy(mask[cur_start_k + k * block_N:cur_start_k + (k + 1) * block_N, cur_kv_head], mask_local)
                 T.clear(acc_s)
                 T.gemm(Q_shared, K_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
                 for i, j in T.Parallel(block_H, block_N):
@@ -319,12 +320,16 @@ def flashattn(batch, heads, k_heads, max_seqlen_kv, total_seqlen_k, dim, has_sin
                     logsum[i] += s_aux_shared[i]
             for i, j in T.Parallel(block_H, dim):
                 acc_o[i, j] /= logsum[i]
-            for h, k in T.Parallel(block_H, loop_range):
+            for h, k in T.Parallel(block_H, math.ceil(max_seqlen_kv / block_N)):
                 S_shared[h, k] = T.exp2((S_shared[h, k] - scores_max[h]) * scale) / logsum[h]
+            # T.copy(S_shared, S_fragment)
+            # for h, k in T.Parallel(block_H, math.ceil(max_seqlen_kv / block_N)):
+            #     S_fragment[h, k] = T.exp2((S_fragment[h, k] - scores_max[h]) * scale) / logsum[h]
             for i in T.Parallel(block_H):
                 logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
             T.copy(acc_o[:valid_block_H, :], O_shared)
             T.copy(O_shared, Output[bid, hid * valid_block_H:(hid + 1) * valid_block_H, :])
+            # T.copy(S_fragment, S_shared)
             T.copy(S_shared[:valid_block_H, :], S[bid, hid * valid_block_H:(hid + 1) * valid_block_H, :])
 
     @T.prim_func
@@ -333,14 +338,11 @@ def flashattn(batch, heads, k_heads, max_seqlen_kv, total_seqlen_k, dim, has_sin
             K: T.Tensor(shape_k, dtype),
             V: T.Tensor(shape_v, dtype),
             cu_seqlens_k: T.Tensor([batch+1], "int32"),
-            mask: T.Tensor([total_seqlen_k, k_heads], "uint8"),
             s_aux: T.Tensor([heads], "float32"),
-            glse: T.Tensor([batch, heads, num_split], dtype),
-            Output_partial: T.Tensor(part_shape, dtype),
             Output: T.Tensor(shape_o, dtype),
             S: T.Tensor(shape_s, dtype),
     ):
-        flash_attn(Q, K, V, cu_seqlens_k, mask, s_aux, Output, S)
+        flash_attn(Q, K, V, cu_seqlens_k, s_aux, Output, S)
 
     # TODO: split version
     return flashattn_gqa_decode_no_split
@@ -382,10 +384,10 @@ def flash_attn_with_attn_pool_decode_tilelang(
 
     O_tl = torch.zeros_like(Q)
     S_tl = torch.zeros((batch, q_h, math.ceil(real_max_k_seqlen / block_size)), dtype=Q.dtype, device=Q.device)
-    mask = torch.ones((cu_seqlens_k[-1].item(), k_h), dtype=torch.uint8, device=Q.device)
-    glse = torch.empty(batch, q_h, num_split, dtype=Q.dtype, device=Q.device)
-    Output_partial = torch.empty(batch, q_h, num_split, head_size, dtype=Q.dtype, device=Q.device)
-    O_tl, S_tl = tl_kernel(Q, K, V, cu_seqlens_k, mask, s_aux, glse, Output_partial)
+    # mask = torch.ones((cu_seqlens_k[-1].item(), k_h), dtype=torch.uint8, device=Q.device)
+    # glse = torch.empty(batch, q_h, num_split, dtype=Q.dtype, device=Q.device)
+    # Output_partial = torch.empty(batch, q_h, num_split, head_size, dtype=Q.dtype, device=Q.device)
+    O_tl, S_tl = tl_kernel(Q, K, V, cu_seqlens_k, s_aux)
 
     if use_per_kv_head_sparse_index:
         S_tl = torch.max_pool2d(S_tl, kernel_size=(gqa_group_size, 1), stride=(gqa_group_size, 1))
@@ -559,7 +561,7 @@ def test_equal_seqlen_decode_main(args):
         ceil_mode=True
     ).to(torch.float16)
     
-    print("S_triton", S_triton)
+    print("S_tilelang", S_tilelang)
     print("attn_score_pooled", attn_score_pooled)
 
 
@@ -923,7 +925,6 @@ if __name__ == "__main__":
     parser.add_argument('--benchmark', action='store_true', help='Run speed benchmark')
     parser.add_argument('--num_split', type=int, default=1, choices=[1, 16], help='Number of splits')
     args = parser.parse_args()
-    args.benchmark = False
     args.test_sink = True
     args.test_varlen = False
     args.dtype = 'float16'
