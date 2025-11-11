@@ -436,7 +436,7 @@ def flash_attn_with_attn_pool_decode(
     S = torch.zeros((batch, q_h, math.ceil(max_seqlen_k / block_size)),
                     dtype=Q.dtype,
                     device=Q.device)
-    
+
     def grid(META):
         return (batch, k_h)
 
