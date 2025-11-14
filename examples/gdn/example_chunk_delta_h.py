@@ -99,7 +99,7 @@ def get_configs():
 
 
 @autotune(configs=get_configs(), warmup=3, rep=5)
-@tilelang.jit(out_idx=[-3, -2, -1],pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
+@tilelang.jit(out_idx=[-3, -2, -1], pass_configs={tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: True})
 def tilelang_chunk_gated_delta_rule_fwd_h(
     # task config
     B,
