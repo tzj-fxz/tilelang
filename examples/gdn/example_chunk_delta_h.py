@@ -300,8 +300,7 @@ def run_test(
     kernel = tilelang_chunk_gated_delta_rule_fwd_h(B, S, H, DK, DV, input_dtype, output_dtype,
                                                    accum_dtype, gate_dtype, state_dtype, chunk_size,
                                                    use_g, use_initial_state, store_final_state,
-                                                   save_new_value, block_DK, block_DV, threads,
-                                                   num_stages)
+                                                   save_new_value)
     h_tilelang, final_state_tilelang, V_new_tilelang = kernel(K, W, U, G, initial_state)
     # (zhengju) If you want to print the generated cuda code, you can uncomment the following line
     # print("CUDA Code:\n", kernel.get_kernel_source())
