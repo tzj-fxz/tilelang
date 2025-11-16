@@ -262,7 +262,6 @@ def test_equal_seqlen_decode_main(args):
             block_table[i, j] = block_cnt
             block_cnt += 1
         block_cnt = 0
-    print(f"block_table: {block_table}")
 
     # Test our decode kernel
     O_triton, S_triton = flash_attn_with_attn_pool_decode(
@@ -414,7 +413,6 @@ def test_varlen_decode_main(args):
             block_table[i, j] = block_cnt
             block_cnt += 1
         block_cnt = 0
-    print(f"block_table: {block_table}")
 
     # Test our decode kernel
     O_triton, S_triton = flash_attn_with_attn_pool_decode(
@@ -650,7 +648,6 @@ def speed_benchmark_decode_comparison(args):
             block_table[i, j] = block_cnt
             block_cnt += 1
         block_cnt = 0
-    print(f"block_table: {block_table}")
 
     # Benchmark
     print("⚡ Benchmarking Tilelang kernel (100 iterations)...")
@@ -678,7 +675,6 @@ def speed_benchmark_decode_comparison(args):
                            cu_seqlens_k, max_seqlen_k, args.k_seqlen, 1, softmax_scale, sink,
                            block_size)
     print(f"Average decode kernel time Triton: {triton_time:.3f} ms")
-
     print(f"Speedup: {(triton_time / tilelang_time):.3f}")
 
 
