@@ -214,7 +214,7 @@ def get_configs():
     return configs
 
 
-@autotune(configs=get_configs(), warmup=10, rep=10)
+# @autotune(configs=get_configs(), warmup=10, rep=10)
 @tilelang.jit(out_idx=[-2, -1], debug_root_path="./examples/flash_decoding")
 def flashattn(batch,
               heads,
@@ -268,16 +268,7 @@ def flashattn(batch,
             scores_sum = T.alloc_fragment([block_H], accum_dtype)
             logsum = T.alloc_fragment([block_H], accum_dtype)
             S_shared = T.alloc_shared([block_H, math.ceil(max_seqlen_kv / block_N)], dtype)
-            # S_fragment = T.alloc_fragment([block_H, math.ceil(max_seqlen_kv / block_N)], accum_dtype)
             s_aux_shared = T.alloc_shared([block_H], "float32")
-
-            T.annotate_layout({
-                # Q_shared: tilelang.layout.make_swizzled_layout(Q_shared),
-                # K_shared: tilelang.layout.make_swizzled_layout(K_shared),
-                # V_shared: tilelang.layout.make_swizzled_layout(V_shared),
-                # O_shared: tilelang.layout.make_swizzled_layout(O_shared),
-                # S_shared: tilelang.layout.make_swizzled_layout(S_shared),
-            })
 
             bid = bx
             hid = by
@@ -297,13 +288,11 @@ def flashattn(batch,
             for k in T.Pipelined(loop_range, num_stages=num_stages):
                 k_start = BLOCK_TABLE[bid, (k * block_N) //
                                       page_block_size] * page_block_size + (k * block_N) % page_block_size
-                T.copy(K[k_start:k_start + block_N, cur_kv_head, :],
+                T.copy(K[cur_start_k + k_start:cur_start_k + k_start + block_N, cur_kv_head, :],
                        K_shared)
                 T.clear(acc_s)
                 T.gemm(Q_shared, K_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)
                 for i, j in T.Parallel(block_H, block_N):
-                    # acc_s[i, j] = T.if_then_else(mask_local[j] != 0 and k * block_N + j < cur_seqlen_k, acc_s[i, j],
-                    #                              -T.infinity(accum_dtype))
                     acc_s[i, j] = T.if_then_else(k * block_N + j < cur_seqlen_k, acc_s[i, j],
                                                  -T.infinity(accum_dtype))
                 T.copy(scores_max, scores_max_prev)
@@ -327,7 +316,7 @@ def flashattn(batch,
                     acc_o[i, j] *= scores_scale[i]
                 v_start = BLOCK_TABLE[bid, (k * block_N) //
                                       page_block_size] * page_block_size + (k * block_N) % page_block_size
-                T.copy(V[v_start:v_start + block_N, cur_kv_head, :],
+                T.copy(V[cur_start_k + v_start:cur_start_k + v_start + block_N, cur_kv_head, :],
                        V_shared)
                 T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
 
@@ -339,14 +328,10 @@ def flashattn(batch,
                 acc_o[i, j] /= logsum[i]
             for h, k in T.Parallel(block_H, math.ceil(max_seqlen_kv / block_N)):
                 S_shared[h, k] = T.exp2((S_shared[h, k] - scores_max[h]) * scale) / logsum[h]
-            # T.copy(S_shared, S_fragment)
-            # for h, k in T.Parallel(block_H, math.ceil(max_seqlen_kv / block_N)):
-            #     S_fragment[h, k] = T.exp2((S_fragment[h, k] - scores_max[h]) * scale) / logsum[h]
             for i in T.Parallel(block_H):
                 logsum[i] = T.log2(logsum[i]) + scores_max[i] * scale
             T.copy(acc_o[:valid_block_H, :], O_shared)
             T.copy(O_shared, Output[bid, hid * valid_block_H:(hid + 1) * valid_block_H, :])
-            # T.copy(S_fragment, S_shared)
             T.copy(S_shared[:valid_block_H, :], S[bid,
                                                   hid * valid_block_H:(hid + 1) * valid_block_H, :])
 
@@ -357,10 +342,11 @@ def flashattn(batch,
             V: T.Tensor(shape_v, dtype),
             cu_seqlens_k: T.Tensor([batch + 1], "int32"),
             s_aux: T.Tensor([heads], "float32"),
+            BLOCK_TABLE: T.Tensor([batch, math.ceil(max_seqlen_kv / page_block_size)], "int32"),
             Output: T.Tensor(shape_o, dtype),
             S: T.Tensor(shape_s, dtype),
     ):
-        flash_attn(Q, K, V, cu_seqlens_k, s_aux, Output, S)
+        flash_attn(Q, K, V, cu_seqlens_k, s_aux, BLOCK_TABLE, Output, S)
 
     # TODO: split version
     return flashattn_gqa_decode_no_split
@@ -504,8 +490,8 @@ def test_equal_seqlen_decode_main(args):
         print(f"Using sink attention with sink values: {sink}")
 
     # Convert to varlen format for K, V
-    k_varlen = k.transpose(1, 2).reshape(batch_size * k_seqlen, kv_heads, head_size)
-    v_varlen = v.transpose(1, 2).reshape(batch_size * k_seqlen, kv_heads, head_size)
+    k_varlen = k.transpose(1, 2).reshape(batch_size * k_seqlen, kv_heads, head_size).contiguous()
+    v_varlen = v.transpose(1, 2).reshape(batch_size * k_seqlen, kv_heads, head_size).contiguous()
 
     # Generate cumulative sequence lengths
     cu_seqlens_k = torch.arange(
@@ -522,13 +508,14 @@ def test_equal_seqlen_decode_main(args):
     tl_kernel = flashattn(batch, q_h, k_h, args.k_seqlen, cu_seqlens_k[-1].item(), head_size,
                           args.test_sink, page_block_size)
     
-    block_table = torch.zeros(batch, math.ceil(max_seqlen_k / page_block_size), device='cuda', dtype=torch.int32)
+    block_table = torch.zeros(batch, math.ceil(real_max_k_seqlen / page_block_size), device='cuda', dtype=torch.int32)
     block_cnt = 0
     for i in range(batch):
         cur_seqlen = cu_seqlens_k[i + 1].item() - cu_seqlens_k[i].item()
         for j in range(math.ceil(cur_seqlen / page_block_size)):
             block_table[i, j] = block_cnt
             block_cnt += 1
+        block_cnt = 0
     print(f"block_table: {block_table}")
 
     # Test our decode kernel
@@ -672,13 +659,14 @@ def test_varlen_decode_main(args):
     tl_kernel = flashattn(batch, q_h, k_h, args.k_seqlen, cu_seqlens_k[-1].item(), head_size,
                           args.test_sink, page_block_size)
     
-    block_table = torch.zeros(batch, math.ceil(max_seqlen_k / page_block_size), device='cuda', dtype=torch.int32)
+    block_table = torch.zeros(batch, math.ceil(real_max_k_seqlen / page_block_size), device='cuda', dtype=torch.int32)
     block_cnt = 0
     for i in range(batch):
         cur_seqlen = cu_seqlens_k[i + 1].item() - cu_seqlens_k[i].item()
         for j in range(math.ceil(cur_seqlen / page_block_size)):
             block_table[i, j] = block_cnt
             block_cnt += 1
+        block_cnt = 0
     print(f"block_table: {block_table}")
 
     # Test our decode kernel
@@ -872,6 +860,7 @@ def speed_benchmark_decode_comparison(args):
     q_heads = args.q_heads
     kv_heads = args.kv_heads
     max_k_seqlen = args.k_seqlen
+    real_max_k_seqlen = args.k_seqlen
     head_size = args.head_size
     block_size = args.block_size
     page_block_size = args.page_block_size
@@ -930,13 +919,14 @@ def speed_benchmark_decode_comparison(args):
     tl_kernel = flashattn(batch, q_h, k_h, args.k_seqlen, cu_seqlens_k[-1].item(), head_size,
                           args.test_sink, page_block_size)
     
-    block_table = torch.zeros(batch, math.ceil(max_seqlen_k / page_block_size), device='cuda', dtype=torch.int32)
+    block_table = torch.zeros(batch, math.ceil(real_max_k_seqlen / page_block_size), device='cuda', dtype=torch.int32)
     block_cnt = 0
     for i in range(batch):
         cur_seqlen = cu_seqlens_k[i + 1].item() - cu_seqlens_k[i].item()
         for j in range(math.ceil(cur_seqlen / page_block_size)):
             block_table[i, j] = block_cnt
             block_cnt += 1
+        block_cnt = 0
     print(f"block_table: {block_table}")
 
     # Benchmark
@@ -977,7 +967,7 @@ if __name__ == "__main__":
     parser.add_argument('--k_seqlen', type=int, default=8192, help='Key sequence length')
     parser.add_argument(
         '--head_size', type=int, default=128, choices=[64, 128, 256], help='Head dimension')
-    parser.add_argument('--block_size', type=int, default=64, help='Block size for computation')
+    parser.add_argument('--block_size', type=int, default=128, help='Block size for computation')
     parser.add_argument(
         '--dtype', type=str, default='bfloat16', choices=['float16', 'bfloat16'], help='Data type')
     parser.add_argument(
@@ -990,7 +980,7 @@ if __name__ == "__main__":
     parser.add_argument('--page_block_size', type=int, default=128, help='Page block size')
     args = parser.parse_args()
     args.test_sink = True
-    args.test_varlen = False
+    args.test_varlen = True
     args.dtype = 'float16'
     args.num_split = 1
 
