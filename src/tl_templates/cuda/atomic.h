@@ -52,8 +52,7 @@ TL_DEVICE void AtomicMax(T1 &ref, T2 val,
     // We simulate this process by atomicCAS loop.
     unsigned short *address_as_ushort =
         reinterpret_cast<unsigned short *>(address);
-    unsigned short val_as_ushort =
-        *reinterpret_cast<unsigned short *>(&val);
+    unsigned short val_as_ushort = *reinterpret_cast<unsigned short *>(&val);
     unsigned short old_val_ushort = *address_as_ushort;
     while (val > *reinterpret_cast<T1 *>(&old_val_ushort)) {
       unsigned short assumed_val_ushort = old_val_ushort;
@@ -78,8 +77,7 @@ TL_DEVICE T1 AtomicMaxRet(T1 &ref, T2 val,
                 std::is_same_v<NT1, __nv_bfloat16>) {
     unsigned short *address_as_ushort =
         reinterpret_cast<unsigned short *>(address);
-    unsigned short val_as_ushort =
-        *reinterpret_cast<unsigned short *>(&val);
+    unsigned short val_as_ushort = *reinterpret_cast<unsigned short *>(&val);
     unsigned short old_val_ushort = *address_as_ushort;
     while (val > *reinterpret_cast<T1 *>(&old_val_ushort)) {
       unsigned short assumed_val_ushort = old_val_ushort;
@@ -108,8 +106,7 @@ TL_DEVICE void AtomicMin(T1 &ref, T2 val,
     // We simulate this process by atomicCAS loop.
     unsigned short *address_as_ushort =
         reinterpret_cast<unsigned short *>(address);
-    unsigned short val_as_ushort =
-        *reinterpret_cast<unsigned short *>(&val);
+    unsigned short val_as_ushort = *reinterpret_cast<unsigned short *>(&val);
     unsigned short old_val_ushort = *address_as_ushort;
     while (val < *reinterpret_cast<T1 *>(&old_val_ushort)) {
       unsigned short assumed_val_ushort = old_val_ushort;
@@ -134,8 +131,7 @@ TL_DEVICE T1 AtomicMinRet(T1 &ref, T2 val,
                 std::is_same_v<NT1, __nv_bfloat16>) {
     unsigned short *address_as_ushort =
         reinterpret_cast<unsigned short *>(address);
-    unsigned short val_as_ushort =
-        *reinterpret_cast<unsigned short *>(&val);
+    unsigned short val_as_ushort = *reinterpret_cast<unsigned short *>(&val);
     unsigned short old_val_ushort = *address_as_ushort;
     while (val < *reinterpret_cast<T1 *>(&old_val_ushort)) {
       unsigned short assumed_val_ushort = old_val_ushort;
@@ -163,60 +159,59 @@ TL_DEVICE void AtomicAdd(T1 &ref, T2 val,
     if (memory_order == int(cuda::memory_order_relaxed)) {
       atomicAdd(reinterpret_cast<NT1 *>(address), static_cast<NT1>(val));
     } else {
-      // Since atomic ref do not support memory order, we need to inline ptx code here for each situation
+      // Since atomic ref do not support memory order, we need to inline ptx
+      // code here for each situation
       if constexpr (std::is_same_v<NT1, half>) {
         // fp16
         __half ret_val;
-        unsigned short ret_val_cast = *reinterpret_cast<unsigned short *>(&ret_val);
-        unsigned long long ref_address = reinterpret_cast<unsigned long long>(address);
+        unsigned short ret_val_cast =
+            *reinterpret_cast<unsigned short *>(&ret_val);
+        unsigned long long ref_address =
+            reinterpret_cast<unsigned long long>(address);
         unsigned short val_cast = *reinterpret_cast<unsigned short *>(&val);
         if (memory_order == int(cuda::memory_order_release) ||
             memory_order == int(cuda::memory_order_consume)) {
-          asm volatile(
-            "atom.release.gpu.global.add.noftz.f16 %0, [%1], %2;"
-            : "=h"(ret_val_cast)
-            : "l"(ref_address), "h"(val_cast)
-            : "memory");
+          asm volatile("atom.release.gpu.global.add.noftz.f16 %0, [%1], %2;"
+                       : "=h"(ret_val_cast)
+                       : "l"(ref_address), "h"(val_cast)
+                       : "memory");
         } else if (memory_order == int(cuda::memory_order_acquire)) {
-          asm volatile(
-            "atom.acquire.gpu.global.add.noftz.f16 %0, [%1], %2;"
-            : "=h"(ret_val_cast)
-            : "l"(ref_address), "h"(val_cast)
-            : "memory");
+          asm volatile("atom.acquire.gpu.global.add.noftz.f16 %0, [%1], %2;"
+                       : "=h"(ret_val_cast)
+                       : "l"(ref_address), "h"(val_cast)
+                       : "memory");
         } else if (memory_order == int(cuda::memory_order_acq_rel) ||
                    memory_order == int(cuda::memory_order_seq_cst)) {
-          asm volatile(
-            "atom.acq_rel.gpu.global.add.noftz.f16 %0, [%1], %2;"
-            : "=h"(ret_val_cast)
-            : "l"(ref_address), "h"(val_cast)
-            : "memory");
+          asm volatile("atom.acq_rel.gpu.global.add.noftz.f16 %0, [%1], %2;"
+                       : "=h"(ret_val_cast)
+                       : "l"(ref_address), "h"(val_cast)
+                       : "memory");
         }
       } else if constexpr (std::is_same_v<NT1, __nv_bfloat16>) {
         // bf16
         __nv_bfloat16 ret_val;
-        unsigned short ret_val_cast = *reinterpret_cast<unsigned short *>(&ret_val);
-        unsigned long long ref_address = reinterpret_cast<unsigned long long>(address);
+        unsigned short ret_val_cast =
+            *reinterpret_cast<unsigned short *>(&ret_val);
+        unsigned long long ref_address =
+            reinterpret_cast<unsigned long long>(address);
         unsigned short val_cast = *reinterpret_cast<unsigned short *>(&val);
         if (memory_order == int(cuda::memory_order_release) ||
             memory_order == int(cuda::memory_order_consume)) {
-          asm volatile(
-            "atom.release.gpu.global.add.noftz.bf16 %0, [%1], %2;"
-            : "=h"(ret_val_cast)
-            : "l"(ref_address), "h"(val_cast)
-            : "memory");
+          asm volatile("atom.release.gpu.global.add.noftz.bf16 %0, [%1], %2;"
+                       : "=h"(ret_val_cast)
+                       : "l"(ref_address), "h"(val_cast)
+                       : "memory");
         } else if (memory_order == int(cuda::memory_order_acquire)) {
-          asm volatile(
-            "atom.acquire.gpu.global.add.noftz.bf16 %0, [%1], %2;"
-            : "=h"(ret_val_cast)
-            : "l"(ref_address), "h"(val_cast)
-            : "memory");
+          asm volatile("atom.acquire.gpu.global.add.noftz.bf16 %0, [%1], %2;"
+                       : "=h"(ret_val_cast)
+                       : "l"(ref_address), "h"(val_cast)
+                       : "memory");
         } else if (memory_order == int(cuda::memory_order_acq_rel) ||
                    memory_order == int(cuda::memory_order_seq_cst)) {
-          asm volatile(
-            "atom.acq_rel.gpu.global.add.noftz.bf16 %0, [%1], %2;"
-            : "=h"(ret_val_cast)
-            : "l"(ref_address), "h"(val_cast)
-            : "memory");
+          asm volatile("atom.acq_rel.gpu.global.add.noftz.bf16 %0, [%1], %2;"
+                       : "=h"(ret_val_cast)
+                       : "l"(ref_address), "h"(val_cast)
+                       : "memory");
         }
       }
     }
@@ -240,59 +235,58 @@ TL_DEVICE T1 AtomicAddRet(T1 &ref, T2 val,
       if constexpr (std::is_same_v<NT1, half>) {
         // fp16
         __half ret_val;
-        unsigned short ret_val_cast = *reinterpret_cast<unsigned short *>(&ret_val);
-        unsigned long long ref_address = reinterpret_cast<unsigned long long>(address);
+        unsigned short ret_val_cast =
+            *reinterpret_cast<unsigned short *>(&ret_val);
+        unsigned long long ref_address =
+            reinterpret_cast<unsigned long long>(address);
         unsigned short val_cast = *reinterpret_cast<unsigned short *>(&val);
         if (memory_order == int(cuda::memory_order_release) ||
             memory_order == int(cuda::memory_order_consume)) {
-          asm volatile(
-            "atom.release.gpu.global.add.noftz.f16 %0, [%1], %2;"
-            : "=h"(ret_val_cast)
-            : "l"(ref_address), "h"(val_cast)
-            : "memory");
+          asm volatile("atom.release.gpu.global.add.noftz.f16 %0, [%1], %2;"
+                       : "=h"(ret_val_cast)
+                       : "l"(ref_address), "h"(val_cast)
+                       : "memory");
         } else if (memory_order == int(cuda::memory_order_acquire)) {
-          asm volatile(
-            "atom.acquire.gpu.global.add.noftz.f16 %0, [%1], %2;"
-            : "=h"(ret_val_cast)
-            : "l"(ref_address), "h"(val_cast)
-            : "memory");
+          asm volatile("atom.acquire.gpu.global.add.noftz.f16 %0, [%1], %2;"
+                       : "=h"(ret_val_cast)
+                       : "l"(ref_address), "h"(val_cast)
+                       : "memory");
         } else if (memory_order == int(cuda::memory_order_acq_rel) ||
                    memory_order == int(cuda::memory_order_seq_cst)) {
-          asm volatile(
-            "atom.acq_rel.gpu.global.add.noftz.f16 %0, [%1], %2;"
-            : "=h"(ret_val_cast)
-            : "l"(ref_address), "h"(val_cast)
-            : "memory");
+          asm volatile("atom.acq_rel.gpu.global.add.noftz.f16 %0, [%1], %2;"
+                       : "=h"(ret_val_cast)
+                       : "l"(ref_address), "h"(val_cast)
+                       : "memory");
         }
         return static_cast<T1>(*reinterpret_cast<__half *>(&ret_val_cast));
       } else if constexpr (std::is_same_v<NT1, __nv_bfloat16>) {
         // bf16
         __nv_bfloat16 ret_val;
-        unsigned short ret_val_cast = *reinterpret_cast<unsigned short *>(&ret_val);
-        unsigned long long ref_address = reinterpret_cast<unsigned long long>(address);
+        unsigned short ret_val_cast =
+            *reinterpret_cast<unsigned short *>(&ret_val);
+        unsigned long long ref_address =
+            reinterpret_cast<unsigned long long>(address);
         unsigned short val_cast = *reinterpret_cast<unsigned short *>(&val);
         if (memory_order == int(cuda::memory_order_release) ||
             memory_order == int(cuda::memory_order_consume)) {
-          asm volatile(
-            "atom.release.gpu.global.add.noftz.bf16 %0, [%1], %2;"
-            : "=h"(ret_val_cast)
-            : "l"(ref_address), "h"(val_cast)
-            : "memory");
+          asm volatile("atom.release.gpu.global.add.noftz.bf16 %0, [%1], %2;"
+                       : "=h"(ret_val_cast)
+                       : "l"(ref_address), "h"(val_cast)
+                       : "memory");
         } else if (memory_order == int(cuda::memory_order_acquire)) {
-          asm volatile(
-            "atom.acquire.gpu.global.add.noftz.bf16 %0, [%1], %2;"
-            : "=h"(ret_val_cast)
-            : "l"(ref_address), "h"(val_cast)
-            : "memory");
+          asm volatile("atom.acquire.gpu.global.add.noftz.bf16 %0, [%1], %2;"
+                       : "=h"(ret_val_cast)
+                       : "l"(ref_address), "h"(val_cast)
+                       : "memory");
         } else if (memory_order == int(cuda::memory_order_acq_rel) ||
                    memory_order == int(cuda::memory_order_seq_cst)) {
-          asm volatile(
-            "atom.acq_rel.gpu.global.add.noftz.bf16 %0, [%1], %2;"
-            : "=h"(ret_val_cast)
-            : "l"(ref_address), "h"(val_cast)
-            : "memory");
+          asm volatile("atom.acq_rel.gpu.global.add.noftz.bf16 %0, [%1], %2;"
+                       : "=h"(ret_val_cast)
+                       : "l"(ref_address), "h"(val_cast)
+                       : "memory");
         }
-        return static_cast<T1>(*reinterpret_cast<__nv_bfloat16 *>(&ret_val_cast));
+        return static_cast<T1>(
+            *reinterpret_cast<__nv_bfloat16 *>(&ret_val_cast));
       }
     }
   } else {
