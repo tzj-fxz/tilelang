@@ -5,7 +5,6 @@ import math
 import argparse
 import tilelang
 import tilelang.language as T
-from tilelang.autotuner import autotune
 
 torch.manual_seed(0)
 tilelang.disable_cache()
@@ -286,8 +285,8 @@ def flashattn(batch,
             # loop_range = T.ceildiv((seqlen_kv // num_split), block_N)
             loop_range = T.ceildiv((cur_seqlen_k // num_split), block_N)
             for k in T.Pipelined(loop_range, num_stages=num_stages):
-                k_start = BLOCK_TABLE[bid, (k * block_N) //
-                                      page_block_size] * page_block_size + (k * block_N) % page_block_size
+                k_start = BLOCK_TABLE[bid, (k * block_N) // page_block_size] * page_block_size + (
+                    k * block_N) % page_block_size
                 T.copy(K[cur_start_k + k_start:cur_start_k + k_start + block_N, cur_kv_head, :],
                        K_shared)
                 T.clear(acc_s)
@@ -314,8 +313,8 @@ def flashattn(batch,
                 T.copy(acc_s, acc_s_cast)
                 for i, j in T.Parallel(block_H, dim):
                     acc_o[i, j] *= scores_scale[i]
-                v_start = BLOCK_TABLE[bid, (k * block_N) //
-                                      page_block_size] * page_block_size + (k * block_N) % page_block_size
+                v_start = BLOCK_TABLE[bid, (k * block_N) // page_block_size] * page_block_size + (
+                    k * block_N) % page_block_size
                 T.copy(V[cur_start_k + v_start:cur_start_k + v_start + block_N, cur_kv_head, :],
                        V_shared)
                 T.gemm(acc_s_cast, V_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
@@ -507,8 +506,9 @@ def test_equal_seqlen_decode_main(args):
     k_h = k_varlen.size(1)
     tl_kernel = flashattn(batch, q_h, k_h, args.k_seqlen, cu_seqlens_k[-1].item(), head_size,
                           args.test_sink, page_block_size)
-    
-    block_table = torch.zeros(batch, math.ceil(real_max_k_seqlen / page_block_size), device='cuda', dtype=torch.int32)
+
+    block_table = torch.zeros(
+        batch, math.ceil(real_max_k_seqlen / page_block_size), device='cuda', dtype=torch.int32)
     block_cnt = 0
     for i in range(batch):
         cur_seqlen = cu_seqlens_k[i + 1].item() - cu_seqlens_k[i].item()
@@ -658,8 +658,9 @@ def test_varlen_decode_main(args):
     k_h = k_varlen.size(1)
     tl_kernel = flashattn(batch, q_h, k_h, args.k_seqlen, cu_seqlens_k[-1].item(), head_size,
                           args.test_sink, page_block_size)
-    
-    block_table = torch.zeros(batch, math.ceil(real_max_k_seqlen / page_block_size), device='cuda', dtype=torch.int32)
+
+    block_table = torch.zeros(
+        batch, math.ceil(real_max_k_seqlen / page_block_size), device='cuda', dtype=torch.int32)
     block_cnt = 0
     for i in range(batch):
         cur_seqlen = cu_seqlens_k[i + 1].item() - cu_seqlens_k[i].item()
@@ -918,8 +919,9 @@ def speed_benchmark_decode_comparison(args):
     k_h = k_varlen.size(1)
     tl_kernel = flashattn(batch, q_h, k_h, args.k_seqlen, cu_seqlens_k[-1].item(), head_size,
                           args.test_sink, page_block_size)
-    
-    block_table = torch.zeros(batch, math.ceil(real_max_k_seqlen / page_block_size), device='cuda', dtype=torch.int32)
+
+    block_table = torch.zeros(
+        batch, math.ceil(real_max_k_seqlen / page_block_size), device='cuda', dtype=torch.int32)
     block_cnt = 0
     for i in range(batch):
         cur_seqlen = cu_seqlens_k[i + 1].item() - cu_seqlens_k[i].item()
