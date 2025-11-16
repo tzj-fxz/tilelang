@@ -3,23 +3,9 @@ import math
 import argparse
 import tilelang
 import tilelang.language as T
-from example_gqa_decode_varlen_logits import flash_attn_with_attn_pool_decode
+from example_gqa_decode_varlen_logits import flash_attn_with_attn_pool_decode, repeat_kv, do_bench
 
 torch.manual_seed(0)
-tilelang.disable_cache()
-
-
-def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
-    """
-    This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,
-    num_key_value_heads, seqlen, head_dim) to (batch, num_attention_heads, seqlen, head_dim)
-    """
-    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
-    if n_rep == 1:
-        return hidden_states
-    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen,
-                                                           head_dim)
-    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
 
 def get_configs():
@@ -588,31 +574,6 @@ def test_varlen_decode_main(args):
         rtol=1e-2), f"Score mismatch: {max_diff_s_tl.item()}"
 
     print("✅ All tests passed!")
-
-
-def do_bench(fn, *args, warmup=10, rep=10, **kwargs):
-    """
-    Do benchmark for a function.
-    """
-    start_event = [torch.cuda.Event(enable_timing=True) for i in range(rep)]
-    end_event = [torch.cuda.Event(enable_timing=True) for i in range(rep)]
-    for _ in range(warmup):
-        fn(*args, **kwargs)
-
-    torch.cuda.synchronize()
-    for i in range(rep):
-        start_event[i].record()
-        fn(*args, **kwargs)
-        end_event[i].record()
-    torch.cuda.synchronize()
-
-    # Record clocks
-    times = torch.tensor(
-        [s.elapsed_time(e) for s, e in zip(start_event, end_event)],
-        dtype=torch.float,
-    )
-
-    return times.mean().item()
 
 
 def speed_benchmark_decode_comparison(args):
