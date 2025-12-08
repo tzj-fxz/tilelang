@@ -42,7 +42,7 @@ def get_heuristic_config() -> Tuple[Dict, int]:
     if sm_version == 89:
         cfg = dict(block_N=128, block_H=64, num_split=1, num_stages=0, threads=128)
     else:
-        cfg = dict(block_N=128, block_H=64, num_split=8, num_stages=1, threads=128)
+        cfg = dict(block_N=128, block_H=64, num_split=8, num_stages=2, threads=128)
     return cfg, sm_version
 
 
@@ -228,37 +228,36 @@ def flashattn(batch, heads, groups, seqlen_kv, dim, block_N, block_H, num_split,
         with T.Kernel(heads, batch, threads=128) as (by, bz):
             po_local = T.alloc_fragment([dim], dtype)
             o_accum_local = T.alloc_fragment([dim], accum_dtype)
-            lse_local = T.alloc_local([num_split], dtype)
-            lse_local_max = T.alloc_local([1], accum_dtype)
-            lse_local_split = T.alloc_local([1], accum_dtype)
-            lse_logsum_local = T.alloc_local([1], accum_dtype)
-            # lse_max_local = T.alloc_fragment([128], accum_dtype)
-            scale_local = T.alloc_local([1], accum_dtype)
+            lse_local = T.alloc_fragment([num_split, 128], dtype)
+            lse_logsum_local = T.alloc_fragment([128], accum_dtype)
+            lse_max_local = T.alloc_fragment([128], accum_dtype)
+            scale_local = T.alloc_fragment([128], accum_dtype)
 
             T.annotate_layout({
                 lse_logsum_local: T.Fragment(lse_logsum_local.shape, forward_thread_fn=lambda i: i),
+                lse_max_local: T.Fragment(lse_max_local.shape, forward_thread_fn=lambda i: i),
                 # lse_local: (local_id, thread_id)
-                # lse_local: T.Fragment(lse_local.shape, forward_fn=lambda i, j: (j, i)),
+                lse_local: T.Fragment(lse_local.shape, forward_fn=lambda i, j: (j, i)),
             })
 
             T.clear(lse_logsum_local)
             T.clear(o_accum_local)
-            lse_local_max[0] = -T.infinity(accum_dtype)
-            # Note: We do not use reduce_max here because the assignment from fragment to local registers will cause layout error
+            for k, j in T.Parallel(num_split, 128):
+                lse_local[k, j] = glse[bz, by, k]
+            T.reduce_max(lse_local, lse_max_local, dim=0, clear=True)
             for k in T.serial(num_split):
-                lse_local[k] = glse[bz, by, k]
-                lse_local_max[0] = T.max(lse_local_max[0], lse_local[k])
-            for k in T.Pipelined(num_split, num_stages=1):
-                lse_local_split[0] = glse[bz, by, k]
-                lse_logsum_local[0] += T.exp2(lse_local_split[0] - lse_local_max[0])
-            lse_logsum_local[0] = T.log2(lse_logsum_local[0]) + lse_local_max[0]
+                for j in T.Parallel(128):
+                    lse_logsum_local[j] += T.exp2(lse_local[k, j] - lse_max_local[j])
+            for j in T.Parallel(128):
+                lse_logsum_local[j] = T.log2(lse_logsum_local[j]) + lse_max_local[j]
             for k in T.serial(num_split):
                 for i in T.Parallel(dim):
                     po_local[i] = Output_partial[bz, by, k, i]
-                lse_local_split[0] = glse[bz, by, k]
-                scale_local[0] = T.exp2(lse_local_split[0] - lse_logsum_local[0])
+                for j in T.Parallel(128):
+                    scale_local[j] = T.exp2(lse_local[k, j] - lse_logsum_local[j])
+                # Note: Pay attention to dim and the number of threads in Parallel
                 for i in T.Parallel(dim):
-                    o_accum_local[i] += po_local[i] * scale_local[0]
+                    o_accum_local[i] += po_local[i] * scale_local[i]
             for i in T.Parallel(dim):
                 Output[bz, by, i] = o_accum_local[i]
 
