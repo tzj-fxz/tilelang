@@ -443,6 +443,30 @@ TVM_DLL const Op &wait_wgmma();
 TVM_DLL const Op &sync_grid();
 
 /*!
+ * \brief Synchronize all threads in a warp
+ *
+ * sync_warp()
+ *
+ */
+TVM_DLL const Op &sync_warp();
+
+/*!
+ * \brief Programmatic dependency trigger.
+ *
+ * pdl_trigger()
+ *
+ */
+TVM_DLL const Op &pdl_trigger();
+
+/*!
+ * \brief Programmatic grid dependency synchronization.
+ *
+ * pdl_sync()
+ *
+ */
+TVM_DLL const Op &pdl_sync();
+
+/*!
  * \brief tvm intrinsic for loop continue
  *
  * loop_break()
