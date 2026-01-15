@@ -29,6 +29,7 @@
 #include <utility>
 
 #include "../op/utils.h"
+#include "atomicadd_vectorize.h"
 #include "loop_vectorize.h"
 
 namespace tvm {
@@ -271,8 +272,9 @@ For LoopPragmaUnroll(For stmt) {
 }
 
 Stmt LowerParallelLoop(For loop, const Fragment &loop_layout, Var thread_var,
-                       arith::Analyzer *analyzer, Optional<PrimExpr> predicate,
-                       bool parallel_loop, bool should_vectorize) {
+                       arith::Analyzer *analyzer, const LayoutMap &layout_map,
+                       Optional<PrimExpr> predicate, bool parallel_loop,
+                       bool should_vectorize) {
   // Save analyzer state to prevent conflicted bindings during vectorization
   auto saved_analyzer = analyzer->Clone();
 
@@ -293,10 +295,13 @@ Stmt LowerParallelLoop(For loop, const Fragment &loop_layout, Var thread_var,
 
   // Step 2: Vectorize the loop (if requested)
   if (should_vectorize) {
-    result_loop = VectorizeLoop(result_loop, saved_analyzer.get());
+    result_loop = VectorizeLoop(result_loop, saved_analyzer.get(), layout_map);
   }
 
-  // Step 3: Wrap with predicate if provided and this is a parallel loop
+  // Step 3: Vectorize atomic add operations
+  result_loop = VectorizeAtomicAdd(result_loop);
+
+  // Step 4: Wrap with predicate if provided and this is a parallel loop
   if (predicate.defined() && parallel_loop) {
     return IfThenElse(predicate.value(), result_loop);
   }

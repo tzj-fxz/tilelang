@@ -167,7 +167,8 @@ Stmt FillNode::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
                         InferLevel::kFree);
     auto thread_loop = PartitionLoop(par_op->GetRoot(), T.thread_var, analyzer,
                                      par_op->GetLoopLayout());
-    auto vectorized_thread_loop = VectorizeLoop(thread_loop, analyzer);
+    auto vectorized_thread_loop =
+        VectorizeLoop(thread_loop, analyzer, T.layout_map);
     if (par_op->GetPredicate(T.thread_var).defined()) {
       return IfThenElse(par_op->GetPredicate(T.thread_var).value(),
                         vectorized_thread_loop);
@@ -175,7 +176,8 @@ Stmt FillNode::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
     return vectorized_thread_loop;
   } else if (IsLocalBuffer(dst) || IsLocalVarBuffer(dst)) {
     auto init_loop = MakeSIMTLoop(analyzer);
-    auto vectorized_thread_loop = VectorizeLoop(init_loop, analyzer);
+    auto vectorized_thread_loop =
+        VectorizeLoop(init_loop, analyzer, T.layout_map);
     return vectorized_thread_loop;
   } else if (IsSharedBuffer(dst) || IsGlobalBuffer(dst)) {
     auto par_op = ParallelOp(MakeSIMTLoop(analyzer));
@@ -189,7 +191,8 @@ Stmt FillNode::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
                         InferLevel::kFree);
     auto thread_loop = PartitionLoop(par_op->GetRoot(), T.thread_var, analyzer,
                                      par_op->GetLoopLayout());
-    auto vectorized_thread_loop = VectorizeLoop(thread_loop, analyzer);
+    auto vectorized_thread_loop =
+        VectorizeLoop(thread_loop, analyzer, T.layout_map);
     if (par_op->GetPredicate(T.thread_var).defined()) {
       return IfThenElse(par_op->GetPredicate(T.thread_var).value(),
                         vectorized_thread_loop);
