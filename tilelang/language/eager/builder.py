@@ -10,7 +10,7 @@ from tvm.ir.base import Span
 from tvm.ir.expr import Range
 from tvm.tir.stmt import BufferRegion
 from tvm.tir.stmt_functor import substitute
-from .ast import BaseBuilder, IRGenerator, eval_op, mutate
+from .ast import BaseBuilder, IRGenerator, eval_op, has_internal_prim_func, mutate
 from .utils import construct_strides
 from tilelang.utils import side_effect
 import tvm
@@ -1051,6 +1051,12 @@ class JITFunc(Generic[_P, _T]):
                 with T.Kernel(...): ...
                 # no return
         """
+        if has_internal_prim_func(self.orig_func):
+            return True
+        try:
+            inspect.signature(self.orig_func).bind(*args, **kwargs)
+        except TypeError:
+            return False
         try:
             prim_func = self.orig_func(*args, **kwargs)
             # lazy jit must return PrimFunc
@@ -1059,7 +1065,7 @@ class JITFunc(Generic[_P, _T]):
                 self.p1_cache[p1_key] = TirTemplate.from_lazy_style(self.orig_func.__name__, prim_func)
                 return True
             return False
-        except (JITNoBuilderError, EagerJITBuildError, TypeError):
+        except (JITNoBuilderError, EagerJITBuildError):
             # In eager mode, we construct AST directly without prim_func,
             # so there's no Builder available when the function is called.
             # When eager-only features like T.const() or T.Kernel() are used,
