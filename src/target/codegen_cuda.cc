@@ -1554,7 +1554,7 @@ std::string CodeGenTileLangCUDA::GetVecLoad(DataType t,
       << "Unsupported vector load size: " << t.bits() * t.lanes();
   auto buffer_ref = this->GetBufferRef(t, buffer, base);
   std::ostringstream os;
-  os << "tl::ld_global_256(&(" << buffer_ref << "))";
+  os << "tl::load_global_256(&(" << buffer_ref << "))";
   return os.str();
 }
 
@@ -1578,7 +1578,7 @@ void CodeGenTileLangCUDA::PrintVecStore(const BufferNode *buffer, DataType t,
       << "Unsupported vector load size: " << t.bits() * t.lanes();
   auto buffer_ref = this->GetBufferRef(t, buffer, base);
   this->PrintIndent();
-  this->stream << "tl::st_global_256(&(" << buffer_ref << "), " << value
+  this->stream << "tl::store_global_256(&(" << buffer_ref << "), " << value
                << ");\n";
 }
 
@@ -2605,6 +2605,138 @@ void CodeGenTileLangCUDA::VisitExpr_(const CallNode *op, std::ostream &os) {
     // Emit __ldg(&buffer_ref)
     auto buffer_ref = this->GetBufferRef(op->dtype, buffer, base);
     os << "__ldg(&(" << buffer_ref << "))";
+  } else if (op->op.same_as(tl::ldg32())) {
+    // Explicit 32-bit global memory load: load_global_32(ptr) or
+    // load_global_32_conditional(ptr, pred)
+    ICHECK(!op->args.empty()) << "T.ldg32 expects a pointer argument.";
+    if (op->args.size() > 1) {
+      os << "tl::load_global_32_conditional(";
+      this->PrintExpr(op->args[0], os);
+      os << ", ";
+      this->PrintExpr(op->args[1], os);
+    } else {
+      os << "tl::load_global_32(";
+      this->PrintExpr(op->args[0], os);
+    }
+    os << ")";
+  } else if (op->op.same_as(tl::ldg64())) {
+    // Explicit 64-bit global memory load: load_global_64(ptr) or
+    // load_global_64_conditional(ptr, pred)
+    ICHECK(!op->args.empty()) << "T.ldg64 expects a pointer argument.";
+    if (op->args.size() > 1) {
+      os << "tl::load_global_64_conditional(";
+      this->PrintExpr(op->args[0], os);
+      os << ", ";
+      this->PrintExpr(op->args[1], os);
+    } else {
+      os << "tl::load_global_64(";
+      this->PrintExpr(op->args[0], os);
+    }
+    os << ")";
+  } else if (op->op.same_as(tl::ldg128())) {
+    // Explicit 128-bit global memory load: load_global_128(ptr) or
+    // load_global_128_conditional(ptr, pred)
+    ICHECK(!op->args.empty()) << "T.ldg128 expects a pointer argument.";
+    if (op->args.size() > 1) {
+      os << "tl::load_global_128_conditional(";
+      this->PrintExpr(op->args[0], os);
+      os << ", ";
+      this->PrintExpr(op->args[1], os);
+    } else {
+      os << "tl::load_global_128(";
+      this->PrintExpr(op->args[0], os);
+    }
+    os << ")";
+  } else if (op->op.same_as(tl::ldg256())) {
+    // Explicit 256-bit global memory load: load_global_256(ptr) or
+    // load_global_256_conditional(ptr, pred)
+    ICHECK(!op->args.empty()) << "T.ldg256 expects a pointer argument.";
+    if (op->args.size() > 1) {
+      os << "tl::load_global_256_conditional(";
+      this->PrintExpr(op->args[0], os);
+      os << ", ";
+      this->PrintExpr(op->args[1], os);
+    } else {
+      os << "tl::load_global_256(";
+      this->PrintExpr(op->args[0], os);
+    }
+    os << ")";
+  } else if (op->op.same_as(tl::stg32())) {
+    // Explicit 32-bit global memory store: store_global_32(ptr, value) or
+    // store_global_32_conditional(ptr, value, pred)
+    ICHECK(op->args.size() >= 2)
+        << "T.stg32 expects pointer and value arguments.";
+    if (op->args.size() > 2) {
+      os << "tl::store_global_32_conditional(";
+      this->PrintExpr(op->args[0], os);
+      os << ", ";
+      this->PrintExpr(op->args[1], os);
+      os << ", ";
+      this->PrintExpr(op->args[2], os);
+    } else {
+      os << "tl::store_global_32(";
+      this->PrintExpr(op->args[0], os);
+      os << ", ";
+      this->PrintExpr(op->args[1], os);
+    }
+    os << ")";
+  } else if (op->op.same_as(tl::stg64())) {
+    // Explicit 64-bit global memory store: store_global_64(ptr, value) or
+    // store_global_64_conditional(ptr, value, pred)
+    ICHECK(op->args.size() >= 2)
+        << "T.stg64 expects pointer and value arguments.";
+    if (op->args.size() > 2) {
+      os << "tl::store_global_64_conditional(";
+      this->PrintExpr(op->args[0], os);
+      os << ", ";
+      this->PrintExpr(op->args[1], os);
+      os << ", ";
+      this->PrintExpr(op->args[2], os);
+    } else {
+      os << "tl::store_global_64(";
+      this->PrintExpr(op->args[0], os);
+      os << ", ";
+      this->PrintExpr(op->args[1], os);
+    }
+    os << ")";
+  } else if (op->op.same_as(tl::stg128())) {
+    // Explicit 128-bit global memory store: store_global_128(ptr, value) or
+    // store_global_128_conditional(ptr, value, pred)
+    ICHECK(op->args.size() >= 2)
+        << "T.stg128 expects pointer and value arguments.";
+    if (op->args.size() > 2) {
+      os << "tl::store_global_128_conditional(";
+      this->PrintExpr(op->args[0], os);
+      os << ", ";
+      this->PrintExpr(op->args[1], os);
+      os << ", ";
+      this->PrintExpr(op->args[2], os);
+    } else {
+      os << "tl::store_global_128(";
+      this->PrintExpr(op->args[0], os);
+      os << ", ";
+      this->PrintExpr(op->args[1], os);
+    }
+    os << ")";
+  } else if (op->op.same_as(tl::stg256())) {
+    // Explicit 256-bit global memory store: store_global_256(ptr, value) or
+    // store_global_256_conditional(ptr, value, pred)
+    ICHECK(op->args.size() >= 2)
+        << "T.stg256 expects pointer and value arguments.";
+    if (op->args.size() > 2) {
+      os << "tl::store_global_256_conditional(";
+      this->PrintExpr(op->args[0], os);
+      os << ", ";
+      this->PrintExpr(op->args[1], os);
+      os << ", ";
+      this->PrintExpr(op->args[2], os);
+    } else {
+      os << "tl::store_global_256(";
+      this->PrintExpr(op->args[0], os);
+      os << ", ";
+      this->PrintExpr(op->args[1], os);
+    }
+    os << ")";
   } else if (op->op.same_as(builtin::reinterpret())) {
     DataType tgt_dtype = op->dtype;
     DataType src_dtype = op->args[0]->dtype;
@@ -2612,7 +2744,28 @@ void CodeGenTileLangCUDA::VisitExpr_(const CallNode *op, std::ostream &os) {
 
     // Handle float4_e2m1fn reinterpret
     if (!src_dtype.is_float4_e2m1fn() && !tgt_dtype.is_float4_e2m1fn()) {
-      return CodeGenC::VisitExpr_(op, os);
+      CHECK_EQ(tgt_dtype.lanes() * tgt_dtype.bits(),
+               src_dtype.lanes() * src_dtype.bits())
+          << "reinterpret expects source and target to have the same number of "
+             "bits";
+
+      std::string src_val = PrintExpr(value);
+      std::string rhs = SSAGetID(src_val, src_dtype);
+
+      // If SSAGetID returns the expression itself (happens when MarkConst was
+      // called for constants like -CUDART_INF_F), we need to create a temp
+      // variable because we cannot take the address of an rvalue.
+      if (rhs == src_val) {
+        rhs = name_supply_->FreshName("_reinterpret_tmp");
+        PrintIndent();
+        PrintType(src_dtype, stream);
+        stream << " " << rhs << " = " << src_val << ";\n";
+      }
+
+      os << "(*(";
+      this->PrintType(tgt_dtype, os);
+      os << " *)(&(" << rhs << ")))";
+      return;
     }
     if (src_dtype == tgt_dtype || tgt_dtype.lanes() * tgt_dtype.bits() ==
                                       src_dtype.lanes() * src_dtype.bits()) {
@@ -2634,7 +2787,15 @@ void CodeGenTileLangCUDA::VisitExpr_(const CallNode *op, std::ostream &os) {
       // The case of lane=1 is same as the normal reinterpret,
       // except that we allow the src and dst dtype to have different number of
       // bits.
-      std::string rhs = SSAGetID(PrintExpr(value), src_dtype);
+      std::string src_val = PrintExpr(value);
+      std::string rhs = SSAGetID(src_val, src_dtype);
+      // If SSAGetID returns the expression itself (constant), create temp var
+      if (rhs == src_val) {
+        rhs = name_supply_->FreshName("_reinterpret_tmp");
+        PrintIndent();
+        PrintType(src_dtype, stream);
+        stream << " " << rhs << " = " << src_val << ";\n";
+      }
       os << "(*(";
       this->PrintType(tgt_dtype, os);
       os << " *)(&(" << rhs << ")))";
