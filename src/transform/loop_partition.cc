@@ -109,8 +109,10 @@ For PartitionLoop(For op, Var thread_var, arith::Analyzer *analyzer,
     body = loop->body;
   }
 
-  // Must check the guard if the layout can not be proved as bijective or bounds don't match
-  bool need_guard = (inverse_info.second != arith::IterMapLevel::Bijective) || !bounds_match;
+  // Must check the guard if the layout can not be proved as bijective or bounds
+  // don't match
+  bool need_guard =
+      (inverse_info.second != arith::IterMapLevel::Bijective) || !bounds_match;
 
   // substitute and re-construct the serial loop
   body = Substitute(body, vmap);
