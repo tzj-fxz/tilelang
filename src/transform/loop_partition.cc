@@ -93,17 +93,22 @@ For PartitionLoop(For op, Var thread_var, arith::Analyzer *analyzer,
     thread_offset_map.Set(thread_var, thread_var - range->min);
     has_thread_offset = true;
   }
+  bool bounds_match = true;
   for (int i = 0; i < old_loop_depth; i++) {
     const ForNode *loop = body.as<ForNode>();
     ICHECK(loop != nullptr)
         << "No extra statements are allowed between nested parallel loops.";
+    if (!analyzer->CanProve(loop->extent == loop_layout->InputShape()[i]) ||
+        !analyzer->CanProve(loop->min == 0)) {
+      bounds_match = false;
+    }
     vmap.Set(loop->loop_var, indices[i]);
     loop_mins.push_back(loop->min);
     loop_extents.push_back(loop->extent);
     body = loop->body;
   }
   // Must check the guard if the layout can not be proved as bijective
-  bool need_guard = inverse_info.second != arith::IterMapLevel::Bijective;
+  bool need_guard = inverse_info.second != arith::IterMapLevel::Bijective || !bounds_match;
 
   // substitute and re-construct the serial loop
   body = Substitute(body, vmap);

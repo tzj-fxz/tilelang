@@ -551,7 +551,7 @@ LayoutMap ParallelOpNode::InferLayout(const LayoutInferArgs &T,
     auto inv_layout = loop_layout_->Inverse();
     Array<PrimExpr> thread_indices;
     for (size_t i = 0; i < loop_layout_->OutputDim(); i++) {
-      thread_indices.push_back(InputPlaceholder(i + 1));
+      thread_indices.push_back(0);
     }
     thread_indices.push_back(InputPlaceholder(0) - T.thread_bounds->min);
     auto logical_indices = inv_layout->Forward(thread_indices);
