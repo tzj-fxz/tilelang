@@ -561,7 +561,8 @@ LayoutMap ParallelOpNode::InferLayout(const LayoutInferArgs &T,
       PrimExpr logical_i = logical_indices[i];
       PrimExpr original_extent = loop_vars_[i]->dom->extent;
 
-      // If the logical index cannot be proved to be less than the original extent, add a predicate
+      // If the logical index cannot be proved to be less than the original
+      // extent, add a predicate
       if (!analyzer_.CanProve(LT(logical_i, original_extent))) {
         AddPredicate(LT(logical_i, original_extent));
       }
