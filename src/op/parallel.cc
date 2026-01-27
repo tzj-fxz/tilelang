@@ -546,6 +546,28 @@ LayoutMap ParallelOpNode::InferLayout(const LayoutInferArgs &T,
     }
   }
 
+  // To avoid fragment layout exceed loop extent's boundary
+  if (loop_layout_.defined()) {
+    auto inv_layout = loop_layout_->Inverse();
+    Array<PrimExpr> thread_indices;
+    for (size_t i = 0; i < loop_layout_->OutputDim(); i++) {
+      thread_indices.push_back(0);
+    }
+    thread_indices.push_back(InputPlaceholder(0) - T.thread_bounds->min);
+    auto logical_indices = inv_layout->Forward(thread_indices);
+
+    // Check if the logical indices exceed the original loop_vars_ extent
+    for (size_t i = 0; i < loop_vars_.size(); ++i) {
+      PrimExpr logical_i = logical_indices[i];
+      PrimExpr original_extent = loop_vars_[i]->dom->extent;
+
+      // If the logical index cannot be proved to be less than the original extent, add a predicate
+      if (!analyzer_.CanProve(LT(logical_i, original_extent))) {
+        AddPredicate(LT(logical_i, original_extent));
+      }
+    }
+  }
+
   if (!analyzer_.CanProveEqual(loop_thread_extent, block_size)) {
     AddPredicate(
         LT(InputPlaceholder(0), loop_thread_extent + T.thread_bounds->min));

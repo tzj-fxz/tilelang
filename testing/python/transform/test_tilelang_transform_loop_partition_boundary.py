@@ -33,6 +33,7 @@ def _tilelang_transform_loop_partition_boundary():
             D: T.Tensor((4, 64), T.bfloat16),
         ):
             with T.Kernel(1, threads=128):
+                tx = T.get_thread_binding(0)
                 S_shared = T.alloc_shared((8), T.bfloat16)
                 S_fragment = T.alloc_fragment((8), T.float32)
                 D_shared = T.alloc_shared((4, 64), T.bfloat16)
@@ -40,8 +41,8 @@ def _tilelang_transform_loop_partition_boundary():
                 T.copy(S, S_shared)
                 T.copy(S_shared, S_fragment)
                 for k in T.serial(64):
-                    for i in T.Parallel(8):
-                        if i < 4:
+                    if tx < 4:
+                        for i in T.Parallel(8):
                             D_shared[i, k] = S_fragment[i]
                 T.copy(D_shared, D)
 
