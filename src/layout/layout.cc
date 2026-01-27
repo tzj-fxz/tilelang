@@ -274,9 +274,12 @@ std::pair<Layout, arith::IterMapLevel> LayoutNode::InverseWithLevel() const {
 
   arith::IterMapResult res;
   while (true) {
-    res = arith::DetectIterMap(forward_index_, getVarMap(), 1, level, &analyzer);
-    if (res->errors.empty()) break;
-    if (level == arith::IterMapLevel::NoCheck) break;
+    res =
+        arith::DetectIterMap(forward_index_, getVarMap(), 1, level, &analyzer);
+    if (res->errors.empty())
+      break;
+    if (level == arith::IterMapLevel::NoCheck)
+      break;
     level = static_cast<arith::IterMapLevel>((static_cast<int>(level) * 2) + 1);
   }
   LOG(INFO) << "Layout::InverseWithLevel level: " << static_cast<int>(level);
@@ -618,8 +621,10 @@ arith::IterMapResult FragmentNode::DetectInjective() const {
   arith::IterMapResult res;
   while (true) {
     res = arith::DetectIterMap(indices, getVarMap(), 1, level, &analyzer);
-    if (res->errors.empty()) break;
-    if (level == arith::IterMapLevel::NoCheck) break;
+    if (res->errors.empty())
+      break;
+    if (level == arith::IterMapLevel::NoCheck)
+      break;
     level = static_cast<arith::IterMapLevel>((static_cast<int>(level) * 2) + 1);
   }
   return res;
