@@ -72,12 +72,14 @@ def test_loop_tail_split(block_M, block_N, block_K, threads, vec_load_b, dtype):
 
         return tvm.IRModule({"main": main})
 
+    before_mod, after_mod = before(), after()
     with tvm.transform.PassContext():
-        mod = tvm.tir.transform.BindTarget(auto_target)(before())
+        mod = tvm.tir.transform.BindTarget(auto_target)(before_mod)
         mod = tl.transform.LowerTileOp()(mod)
         mod = tvm.tir.transform.Simplify()(mod)
-    ref_mod = tvm.tir.transform.BindTarget(auto_target)(after())
-    ref_mod = tvm.tir.transform.Simplify()(ref_mod)
+    with tvm.transform.PassContext():
+        ref_mod = tvm.tir.transform.BindTarget(auto_target)(after_mod)
+        ref_mod = tvm.tir.transform.Simplify()(ref_mod)
     # Note(tzj): The structures are equal except the argument in "T.reads" function.
     # The difference is just between the first index and the indices range, which is totally equivalent
     tvm.ir.structural_equal(mod, ref_mod)
