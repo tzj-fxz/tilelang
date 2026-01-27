@@ -271,8 +271,16 @@ std::pair<Layout, arith::IterMapLevel> LayoutNode::InverseWithLevel() const {
                      "NoCheck; symbolic dims: "
                   << symbolic_dims;
   }
-  arith::IterMapResult res =
-      arith::DetectIterMap(forward_index_, getVarMap(), 1, level, &analyzer);
+
+  arith::IterMapResult res;
+  while (true) {
+    res = arith::DetectIterMap(forward_index_, getVarMap(), 1, level, &analyzer);
+    if (res->errors.empty()) break;
+    if (level == arith::IterMapLevel::NoCheck) break;
+    level = static_cast<arith::IterMapLevel>((static_cast<int>(level) * 2) + 1);
+  }
+  LOG(INFO) << "Layout::InverseWithLevel level: " << static_cast<int>(level);
+
   if (!res->errors.empty()) {
     std::ostringstream msg;
     msg << "Layout " << DebugOutput() << " has errors: " << res->errors;
@@ -607,7 +615,14 @@ arith::IterMapResult FragmentNode::DetectInjective() const {
         << "NoCheck; symbolic dims: " << symbolic_dims;
   }
 
-  return arith::DetectIterMap(indices, getVarMap(), 1, level, &analyzer);
+  arith::IterMapResult res;
+  while (true) {
+    res = arith::DetectIterMap(indices, getVarMap(), 1, level, &analyzer);
+    if (res->errors.empty()) break;
+    if (level == arith::IterMapLevel::NoCheck) break;
+    level = static_cast<arith::IterMapLevel>((static_cast<int>(level) * 2) + 1);
+  }
+  return res;
 }
 
 PrimExpr FragmentNode::ThreadExtent() const {
