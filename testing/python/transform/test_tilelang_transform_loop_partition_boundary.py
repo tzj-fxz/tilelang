@@ -23,6 +23,7 @@ def _tilelang_transform_loop_partition_boundary():
                     for i in T.Parallel(4):
                         D_shared[i, k] = S_fragment[i]
                 T.copy(D_shared, D)
+
         return main
 
     def after():
@@ -43,8 +44,9 @@ def _tilelang_transform_loop_partition_boundary():
                         if i < 4:
                             D_shared[i, k] = S_fragment[i]
                 T.copy(D_shared, D)
+
         return main
-        
+
     return tvm.IRModule({"main": before()}), tvm.IRModule({"main": after()})
 
 
