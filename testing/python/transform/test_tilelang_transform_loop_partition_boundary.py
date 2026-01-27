@@ -42,7 +42,7 @@ def _tilelang_transform_loop_partition_boundary():
                 T.copy(S_shared, S_fragment)
                 for k in T.serial(64):
                     if tx < 4:
-                        for i in T.Parallel(8):
+                        for i in T.Parallel(4):
                             D_shared[i, k] = S_fragment[i]
                 T.copy(D_shared, D)
 
