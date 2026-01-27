@@ -274,8 +274,9 @@ std::pair<Layout, arith::IterMapLevel> LayoutNode::InverseWithLevel() const {
 
   arith::IterMapResult res;
   res = arith::DetectIterMap(forward_index_, getVarMap(), 1, level, &analyzer);
-  // We do not find the exact level of current layout, because non-bijective will leave loop guard to handle the boundary.
-  // So just set the level flag and use bijective res to generate correct inverse layour
+  // We do not find the exact level of current layout, because non-bijective
+  // will leave loop guard to handle the boundary. So just set the level flag
+  // and use bijective res to generate correct inverse layour
   if (!res->errors.empty()) {
     level = arith::IterMapLevel::NoCheck;
   }
