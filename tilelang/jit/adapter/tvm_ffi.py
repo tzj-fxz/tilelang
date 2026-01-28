@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from typing import Callable, Any
 import sys
-import warnings
 
 import torch
 from tilelang import tvm
