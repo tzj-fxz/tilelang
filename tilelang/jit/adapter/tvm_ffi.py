@@ -246,7 +246,7 @@ class TVMFFIKernelAdapter(BaseKernelAdapter):
                     tensor = inputs[ins_idx]
                     if isinstance(tensor, torch.Tensor) and 0 in tensor.shape:
                         has_zero_dim = True
-                        warnings.warn(f"Tensor {ins_idx}: {tensor} has zero dimension", UserWarning)
+                        warnings.warn(f"Tensor {ins_idx}: {tensor} has zero dimension", UserWarning, stacklevel=2)
                     ins_idx += 1
                 tensor_list.append(tensor)
 

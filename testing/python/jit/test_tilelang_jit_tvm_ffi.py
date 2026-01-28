@@ -171,6 +171,7 @@ def test_gemm_jit_kernel():
         2,
     )
 
+
 def test_gemm_jit_kernel_zero_dim():
     run_gemm_jit_kernel(
         512,
@@ -186,6 +187,7 @@ def test_gemm_jit_kernel_zero_dim():
         32,
         2,
     )
+
 
 def run_tvm_ffi_kernel_do_bench(
     M, N, K, trans_A, trans_B, in_dtype, out_dtype, dtypeAccum, block_M, block_N, block_K, num_stages=3, num_threads=128
