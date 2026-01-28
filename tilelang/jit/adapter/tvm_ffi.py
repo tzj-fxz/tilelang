@@ -170,7 +170,6 @@ class TVMFFIKernelAdapter(BaseKernelAdapter):
 
         if self.executable is None:
             self.executable = runtime.Executable(self.rt_mod)
-            print(f"self.rt_mod: {self.rt_mod.inspect_source()}")
             if COMPILE_ARGS:
                 # Precompile jit module with extra arguments
                 self.executable.jit(**COMPILE_ARGS)
@@ -207,7 +206,6 @@ class TVMFFIKernelAdapter(BaseKernelAdapter):
             # Stitch the full positional argument list expected by the TVM executable
             ins_idx: int = 0
             tensor_list: list[torch.Tensor] = []
-            has_zero_dim: bool = False
 
             # Prepare input and output tensors
             for i in range(len(self.params)):
@@ -229,9 +227,6 @@ class TVMFFIKernelAdapter(BaseKernelAdapter):
                         else:  # Already converted to Python int during initialization
                             shape.append(s)
 
-                    if 0 in shape:
-                        has_zero_dim = True
-
                     if out_device is None:
                         out_device = current_device_functor()
 
@@ -244,26 +239,8 @@ class TVMFFIKernelAdapter(BaseKernelAdapter):
                     tensor = torch.empty(*shape, dtype=dtype, device=out_device)
                 else:
                     tensor = inputs[ins_idx]
-                    if isinstance(tensor, torch.Tensor) and 0 in tensor.shape:
-                        has_zero_dim = True
-                        warnings.warn(f"Tensor {ins_idx}: {tensor} has zero dimension", UserWarning, stacklevel=2)
                     ins_idx += 1
                 tensor_list.append(tensor)
-
-            if has_zero_dim:
-                # Fix strides for tensors with zero dimensions to satisfy TVM FFI checks
-                # TVM expects row-major strides: stride[i] = shape[i+1] * stride[i+1]
-                # If shape[i+1] is 0, stride[i] should be 0, but Torch defaults to 1.
-                for i in range(len(tensor_list)):
-                    t = tensor_list[i]
-                    if isinstance(t, torch.Tensor) and 0 in t.shape:
-                        new_strides = []
-                        curr_stride = 1
-                        for s in reversed(t.shape):
-                            new_strides.append(curr_stride)
-                            curr_stride *= s
-                        new_strides.reverse()
-                        tensor_list[i] = torch.as_strided(t, t.shape, tuple(new_strides))
 
             executable(*tensor_list)
 
