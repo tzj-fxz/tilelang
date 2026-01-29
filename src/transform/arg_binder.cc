@@ -311,6 +311,36 @@ inline PrimExpr TVMArrayGet(DataType t, Var arr,
   return TVMStructGet(t, arr, 0, kind);
 }
 
+void ArgBinder::RelaxedStrideCheck(const int dim_idx, const PrimExpr &stride,
+                                   const PrimExpr &logical_stride_val,
+                                   const PrimExpr &is_null,
+                                   const std::string &stride_element_name) {
+  if (const VarNode *v = stride.as<VarNode>()) {
+    auto it = def_map_->find(v);
+    if (it != def_map_->end()) {
+      PrimExpr expected = it->second;
+      if (is_zero(analyzer_.Simplify(expected))) {
+        LOG(WARNING) << "TileLang: Detected zero-dimension in "
+                     << stride_element_name << ". Relaxing stride check.";
+      }
+      PrimExpr cond = (expected == logical_stride_val) || (expected == 0);
+      BinderAddAssert(&analyzer_, cond, stride_element_name, &asserts_,
+                      is_null);
+    } else {
+      BindNullable(stride, logical_stride_val, stride_element_name, true,
+                   is_null);
+    }
+  } else {
+    PrimExpr expected = stride;
+    if (is_zero(analyzer_.Simplify(expected))) {
+      LOG(WARNING) << "TileLang: Detected zero-dimension in "
+                   << stride_element_name << ". Relaxing stride check.";
+    }
+    PrimExpr cond = (expected == logical_stride_val) || (expected == 0);
+    BinderAddAssert(&analyzer_, cond, stride_element_name, &asserts_, is_null);
+  }
+}
+
 void ArgBinder::BindDLTensors(
     const std::vector<std::pair<Var, Buffer>> &buffer_def,
     const PrimExpr &device_type, const PrimExpr &device_id,
@@ -829,34 +859,8 @@ void ArgBinder::BindDLTensors(
 
           // Relax stride check: if the expected stride is 0, allow any actual
           // stride. This happens when one of the subsequent dimensions is 0.
-          if (const VarNode *v = buffer->strides[k].as<VarNode>()) {
-            auto it = def_map_->find(v);
-            if (it != def_map_->end()) {
-              PrimExpr expected = it->second;
-              if (is_zero(analyzer_.Simplify(expected))) {
-                LOG(WARNING)
-                    << "TileLang: Detected zero-dimension in "
-                    << stride_element_name(k) << ". Relaxing stride check.";
-              }
-              PrimExpr cond =
-                  (expected == logical_stride_val) || (expected == 0);
-              BinderAddAssert(&analyzer_, cond, stride_element_name(k),
-                              &asserts_, is_null);
-            } else {
-              BindNullable(buffer->strides[k], logical_stride_val,
-                           stride_element_name(k), true, is_null);
-            }
-          } else {
-            PrimExpr expected = buffer->strides[k];
-            if (is_zero(analyzer_.Simplify(expected))) {
-              LOG(WARNING) << "TileLang: Detected zero-dimension in "
-                           << stride_element_name(k)
-                           << ". Relaxing stride check.";
-            }
-            PrimExpr cond = (expected == logical_stride_val) || (expected == 0);
-            BinderAddAssert(&analyzer_, cond, stride_element_name(k), &asserts_,
-                            is_null);
-          }
+          RelaxedStrideCheck(k, buffer->strides[k], logical_stride_val, is_null,
+                             stride_element_name(k));
         }
       }
     } else {
@@ -941,33 +945,8 @@ void ArgBinder::BindDLTensors(
 
           // Relax stride check: if the expected stride is 0, allow any actual
           // stride. This happens when one of the subsequent dimensions is 0.
-          if (const VarNode *v = buffer->strides[k].as<VarNode>()) {
-            auto it = def_map_->find(v);
-            if (it != def_map_->end()) {
-              PrimExpr expected = it->second;
-              if (is_zero(analyzer_.Simplify(expected))) {
-                LOG(WARNING)
-                    << "TileLang: Detected zero-dimension in "
-                    << stride_element_name(k) << ". Relaxing stride check.";
-              }
-              PrimExpr cond = (expected == stride_val) || (expected == 0);
-              BinderAddAssert(&analyzer_, cond, stride_element_name(k),
-                              &asserts_, is_null);
-            } else {
-              BindNullable(buffer->strides[k], stride_val,
-                           stride_element_name(k), true, is_null);
-            }
-          } else {
-            PrimExpr expected = buffer->strides[k];
-            if (is_zero(analyzer_.Simplify(expected))) {
-              LOG(WARNING) << "TileLang: Detected zero-dimension in "
-                           << stride_element_name(k)
-                           << ". Relaxing stride check.";
-            }
-            PrimExpr cond = (expected == stride_val) || (expected == 0);
-            BinderAddAssert(&analyzer_, cond, stride_element_name(k), &asserts_,
-                            is_null);
-          }
+          RelaxedStrideCheck(k, buffer->strides[k], stride_val, is_null,
+                             stride_element_name(k));
         }
       } else {
         PrimExpr stride_from_shape = 1;
@@ -987,33 +966,8 @@ void ArgBinder::BindDLTensors(
 
           // Relax stride check: if the expected stride is 0, allow any actual
           // stride. This happens when one of the subsequent dimensions is 0.
-          if (const VarNode *v = buffer->strides[k].as<VarNode>()) {
-            auto it = def_map_->find(v);
-            if (it != def_map_->end()) {
-              PrimExpr expected = it->second;
-              if (is_zero(analyzer_.Simplify(expected))) {
-                LOG(WARNING)
-                    << "TileLang: Detected zero-dimension in "
-                    << stride_element_name(k) << ". Relaxing stride check.";
-              }
-              PrimExpr cond = (expected == stride_val) || (expected == 0);
-              BinderAddAssert(&analyzer_, cond, stride_element_name(k),
-                              &asserts_, is_null);
-            } else {
-              BindNullable(buffer->strides[k], stride_val,
-                           stride_element_name(k), true, is_null);
-            }
-          } else {
-            PrimExpr expected = buffer->strides[k];
-            if (is_zero(analyzer_.Simplify(expected))) {
-              LOG(WARNING) << "TileLang: Detected zero-dimension in "
-                           << stride_element_name(k)
-                           << ". Relaxing stride check.";
-            }
-            PrimExpr cond = (expected == stride_val) || (expected == 0);
-            BinderAddAssert(&analyzer_, cond, stride_element_name(k), &asserts_,
-                            is_null);
-          }
+          RelaxedStrideCheck(k, buffer->strides[k], stride_val, is_null,
+                             stride_element_name(k));
         }
       }
     }
