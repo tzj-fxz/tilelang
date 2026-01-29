@@ -331,7 +331,7 @@ void ArgBinder::RelaxedStrideCheck(const int dim_idx, const PrimExpr &stride,
                    is_null);
     }
   } else {
-    PrimExpr expected = stride;
+    const PrimExpr &expected = stride;
     if (is_zero(analyzer_.Simplify(expected))) {
       LOG(WARNING) << "TileLang: Detected zero-dimension in "
                    << stride_element_name << ". Relaxing stride check.";
