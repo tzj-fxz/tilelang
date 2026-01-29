@@ -893,7 +893,7 @@ void ArgBinder::BindDLTensors(
                                                      static_cast<int>(k))}));
           if (is_zero(analyzer_.Simplify(expect_stride))) {
             LOG(WARNING) << "TileLang: Detected zero-dimension in compact "
-                            "buffer strides calculation. "
+                         << "buffer strides calculation. "
                          << "Relaxing check for " << stride_handle_name();
           }
           conds.push_back(buffer->shape[k] == 1 || expect_stride == svalue ||
