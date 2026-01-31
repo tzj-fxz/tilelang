@@ -85,7 +85,9 @@ struct AllReduce {
 
       if (warp_id_in_group == 0) {
         const int group_base_warp = group_id * num_warps_per_group;
-        T val = (lane_id < num_warps_per_group) ? red_buf[group_base_warp + lane_id] : x;
+        T val = (lane_id < num_warps_per_group)
+                    ? red_buf[group_base_warp + lane_id]
+                    : x;
         // Final reduction within the first warp of the group
         for (int offset = 16; offset > 0; offset >>= 1) {
           T y = tl::shfl_xor_sync(uint32_t(-1), val, offset);
@@ -117,8 +119,8 @@ struct AllReduce {
       if constexpr (offset == scale) {
         return x;
       } else {
-        return AllReduce<Reducer, offset, scale, thread_offset, all_threads>::run(
-            x, red_buf);
+        return AllReduce<Reducer, offset, scale, thread_offset,
+                         all_threads>::run(x, red_buf);
       }
     }
   }
@@ -144,7 +146,9 @@ struct AllReduce {
 
       if (warp_id_in_group == 0) {
         const int group_base_warp = group_id * num_warps_per_group;
-        T val = (lane_id < num_warps_per_group) ? red_buf[group_base_warp + lane_id] : x;
+        T val = (lane_id < num_warps_per_group)
+                    ? red_buf[group_base_warp + lane_id]
+                    : x;
         for (int offset = 16; offset > 0; offset >>= 1) {
           T y = tl::shfl_xor_sync(uint32_t(-1), val, offset);
           if ((lane_id ^ offset) < num_warps_per_group) {
