@@ -375,13 +375,16 @@ Stmt ReduceOpNode::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
         }
         Array<PrimExpr> thread_reduce_args = {
             StringImm(ss.str()), BufferLoad(clear_buffer, red_indices)};
+        auto get_workspace_size = [&]() {
+          if (reducing_threads > 32 && (reducing_threads % 32 == 0) &&
+              (*scale) == 1) {
+            return reducing_threads / 32;
+          }
+          return static_cast<int>(*as_const_int(T.thread_bounds->extent));
+        };
         if (reducing_threads > 32) {
-          int workspace_size = (reducing_threads > 32 &&
-                                (reducing_threads % 32 == 0) && (*scale) == 1)
-                                   ? (reducing_threads / 32)
-                                   : (*as_const_int(T.thread_bounds->extent));
           PrimExpr workspace =
-              T.AddWorkspace(workspace_size, clear_buffer->dtype);
+              T.AddWorkspace(get_workspace_size(), clear_buffer->dtype);
           thread_reduce_args.push_back(workspace);
         }
         auto call = Call(clear_buffer->dtype, builtin::call_extern(),

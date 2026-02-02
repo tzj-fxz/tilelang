@@ -1,6 +1,8 @@
 #pragma once
 
 #include "common.h"
+#include <cuda_bf16.h>
+#include <cuda_fp16.h>
 
 #ifndef __CUDACC_RTC__
 #include <cstdint>
@@ -334,77 +336,50 @@ template <int threads, int Axis = 0, bool reverse = false> struct CumSum2D {
   }
 };
 
+// Reference:
+// https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#reduction
 template <typename T, typename ReduceOp>
 TL_DEVICE T warp_reduce(T value, ReduceOp op) {
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
-  if constexpr (std::is_same_v<ReduceOp, SumOp> &&
-                (std::is_same_v<T, int32_t> || std::is_same_v<T, uint32_t>)) {
-    uint32_t res;
-    if constexpr (std::is_same_v<T, int32_t>) {
-      asm volatile("redux.sync.add.s32 %0, %1, 0xffffffff;"
-                   : "=r"(res)
-                   : "r"((uint32_t)value));
-    } else {
-      asm volatile("redux.sync.add.u32 %0, %1, 0xffffffff;"
-                   : "=r"(res)
-                   : "r"(value));
-    }
-    return (T)res;
-  } else if constexpr (std::is_same_v<ReduceOp, MaxOp> &&
-                       (std::is_same_v<T, int32_t> ||
-                        std::is_same_v<T, uint32_t>)) {
-    uint32_t res;
-    if constexpr (std::is_same_v<T, int32_t>) {
-      asm volatile("redux.sync.max.s32 %0, %1, 0xffffffff;"
-                   : "=r"(res)
-                   : "r"((uint32_t)value));
-    } else {
-      asm volatile("redux.sync.max.u32 %0, %1, 0xffffffff;"
-                   : "=r"(res)
-                   : "r"(value));
-    }
-    return (T)res;
-  } else if constexpr (std::is_same_v<ReduceOp, MinOp> &&
-                       (std::is_same_v<T, int32_t> ||
-                        std::is_same_v<T, uint32_t>)) {
-    uint32_t res;
-    if constexpr (std::is_same_v<T, int32_t>) {
-      asm volatile("redux.sync.min.s32 %0, %1, 0xffffffff;"
-                   : "=r"(res)
-                   : "r"((uint32_t)value));
-    } else {
-      asm volatile("redux.sync.min.u32 %0, %1, 0xffffffff;"
-                   : "=r"(res)
-                   : "r"(value));
-    }
-    return (T)res;
-  } else if constexpr (std::is_same_v<ReduceOp, BitAndOp> &&
-                       (std::is_same_v<T, int32_t> ||
-                        std::is_same_v<T, uint32_t>)) {
-    uint32_t res;
-    asm volatile("redux.sync.and.b32 %0, %1, 0xffffffff;"
-                 : "=r"(res)
-                 : "r"((uint32_t)value));
-    return (T)res;
-  } else if constexpr (std::is_same_v<ReduceOp, BitOrOp> &&
-                       (std::is_same_v<T, int32_t> ||
-                        std::is_same_v<T, uint32_t>)) {
-    uint32_t res;
-    asm volatile("redux.sync.or.b32 %0, %1, 0xffffffff;"
-                 : "=r"(res)
-                 : "r"((uint32_t)value));
-    return (T)res;
-  } else if constexpr (std::is_same_v<ReduceOp, BitXorOp> &&
-                       (std::is_same_v<T, int32_t> ||
-                        std::is_same_v<T, uint32_t>)) {
-    uint32_t res;
-    asm volatile("redux.sync.xor.b32 %0, %1, 0xffffffff;"
-                 : "=r"(res)
-                 : "r"((uint32_t)value));
-    return (T)res;
+  constexpr uint32_t mask = 0xffffffff;
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000) &&                       \
+    (defined(__CUDA_ARCH_FEAT_SM100_ALL) || defined(__CUDA_ARCH_FEAT_SM100_F))
+  float value_cast = 0.0f;
+  if constexpr (std::is_same_v<T, half_t>) {
+    value_cast = __half2float(value);
+  } else if constexpr (std::is_same_v<T, bfloat16_t>) {
+    value_cast = __bfloat162float(value);
+  } else {
+    value_cast = static_cast<float>(value);
+  }
+  if constexpr (std::is_same_v<ReduceOp, MaxOp>) {
+    return __reduce_max_sync(mask, value_cast);
+  } else if constexpr (std::is_same_v<ReduceOp, MinOp>) {
+    return __reduce_min_sync(mask, value_cast);
   }
 #endif
-  constexpr uint32_t mask = 0xffffffff;
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
+  auto run_reduce_sync = [&]<typename T_cast>(T_cast val) {
+    if constexpr (std::is_same_v<ReduceOp, SumOp>) {
+      return __reduce_add_sync(mask, val);
+    } else if constexpr (std::is_same_v<ReduceOp, MaxOp>) {
+      return __reduce_max_sync(mask, val);
+    } else if constexpr (std::is_same_v<ReduceOp, MinOp>) {
+      return __reduce_min_sync(mask, val);
+    } else if constexpr (std::is_same_v<ReduceOp, BitAndOp>) {
+      return __reduce_and_sync(mask, val);
+    } else if constexpr (std::is_same_v<ReduceOp, BitOrOp>) {
+      return __reduce_or_sync(mask, val);
+    } else if constexpr (std::is_same_v<ReduceOp, BitXorOp>) {
+      return __reduce_xor_sync(mask, val);
+    }
+  };
+
+  if constexpr (std::is_same_v<T, int32_t> || std::is_same_v<T, uint32_t>) {
+    return run_reduce_sync(value);
+  } else if constexpr (std::is_integral_v<T>) {
+    return static_cast<T>(run_reduce_sync(static_cast<int32_t>(value)));
+  }
+#endif
   value = op(value, tl::shfl_xor_sync(mask, value, 16));
   value = op(value, tl::shfl_xor_sync(mask, value, 8));
   value = op(value, tl::shfl_xor_sync(mask, value, 4));
