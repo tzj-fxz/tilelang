@@ -352,9 +352,17 @@ TL_DEVICE T warp_reduce(T value, ReduceOp op) {
     value_cast = static_cast<float>(value);
   }
   if constexpr (std::is_same_v<ReduceOp, MaxOp>) {
-    return __reduce_max_sync(mask, value_cast);
+    float res;
+    asm("redux.sync.max.f32 %0, %1, %2;"
+        : "=f"(res)
+        : "f"(value_cast), "r"(mask));
+    return static_cast<T>(res);
   } else if constexpr (std::is_same_v<ReduceOp, MinOp>) {
-    return __reduce_min_sync(mask, value_cast);
+    float res;
+    asm("redux.sync.min.f32 %0, %1, %2;"
+        : "=f"(res)
+        : "f"(value_cast), "r"(mask));
+    return static_cast<T>(res);
   }
 #endif
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
