@@ -348,16 +348,15 @@ TL_DEVICE T warp_reduce(T value, ReduceOp op) {
     value_cast = __half2float(value);
   } else if constexpr (std::is_same_v<T, bfloat16_t>) {
     value_cast = __bfloat162float(value);
-  } else {
-    value_cast = static_cast<float>(value);
   }
-  if constexpr (std::is_same_v<ReduceOp, MaxOp>) {
+  if constexpr (std::is_same_v<ReduceOp, MaxOp> && !std::is_integral_v<T>) {
     float res;
     asm("redux.sync.max.f32 %0, %1, %2;"
         : "=f"(res)
         : "f"(value_cast), "r"(mask));
     return static_cast<T>(res);
-  } else if constexpr (std::is_same_v<ReduceOp, MinOp>) {
+  } else if constexpr (std::is_same_v<ReduceOp, MinOp> &&
+                       !std::is_integral_v<T>) {
     float res;
     asm("redux.sync.min.f32 %0, %1, %2;"
         : "=f"(res)
