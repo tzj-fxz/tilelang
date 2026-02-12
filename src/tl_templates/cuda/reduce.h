@@ -62,129 +62,122 @@ struct BitXorOp {
   }
 };
 
+// Barrier policy: wraps __syncthreads().
+// The phase template parameter is ignored (all phases use the same barrier).
+struct SyncThreadsBarrier {
+  template <int phase = 0> static TL_DEVICE void sync() { __syncthreads(); }
+};
+
+// Barrier policy: wraps named barrier (bar.sync) with compile-time phase IDs.
+// Used on Hopper and later architectures where __syncthreads() cannot be used
+// in certain contexts.
+template <int all_threads> struct NamedBarrier {
+  template <int phase = 1> static TL_DEVICE void sync() {
+    asm volatile("bar.sync %0, %1;" : : "r"(phase), "r"(all_threads));
+  }
+};
+
+// Performs the cross-warp reduction within the first warp of each group.
+// After all warps have written their partial results into red_buf, this
+// function loads them, reduces via warp shuffles, and writes the final
+// result back.
+template <class Reducer, int num_warps, typename T>
+TL_DEVICE void warp_inter_reduce(T *red_buf, int group_base, int lane_id) {
+  T val = (lane_id < num_warps) ? red_buf[group_base + lane_id]
+                                : red_buf[group_base];
+  for (int offset = 16; offset > 0; offset >>= 1) {
+    T y = tl::shfl_xor_sync(uint32_t(-1), val, offset);
+    if ((lane_id ^ offset) < num_warps) {
+      if (lane_id < num_warps) {
+        val = Reducer()(val, y);
+      } else {
+        val = y;
+      }
+    }
+  }
+  if (lane_id == 0)
+    red_buf[group_base] = val;
+}
+
+// AllReduce performs a cross-thread reduction over a group of `threads`
+// threads.
+//
+// Template parameters:
+//   Reducer       - binary reduction functor (e.g. SumOp, MaxOp).
+//   threads       - number of threads that span the reduce dimension,
+//                   equal to extent * scale.
+//   scale         - stride of participating threads in the thread index space.
+//                   When the thread-to-data mapping is normalized as
+//                     threadIdx = source * scale + ...
+//                   `scale` is the stride between consecutive logical
+//                   participants in the reduce dimension.
+//                   * scale == 1: threads are contiguous (0,1,2,...), enabling
+//                     the optimized hierarchical warp-reduce path.
+//                   * scale  > 1: threads are interleaved (0, scale, 2*scale,
+//                     ...), falling back to the recursive XOR-butterfly path.
+//                   The recursion terminates when threads == scale, meaning
+//                   each reduce group has been collapsed to a single thread.
+//   thread_offset - base thread index offset within the block.
+//   Barrier       - barrier policy type (SyncThreadsBarrier or
+//                   NamedBarrier<N>).
 template <class Reducer, int threads, int scale, int thread_offset = 0,
-          int all_threads = threads>
+          class Barrier = SyncThreadsBarrier>
 struct AllReduce {
   static_assert(threads % scale == 0);
   template <typename T> static TL_DEVICE T run(T x, T *red_buf = nullptr) {
     if constexpr (threads == scale) {
+      // Recursion base case: each reduce group has exactly one thread left.
       return x;
     } else if constexpr (threads > 32 && (threads % 32 == 0) && scale == 1) {
-      // Hierarchical reduction for threads > 32 and scale == 1
-      x = warp_reduce<T>(x, Reducer());
-
-      const int num_warps_per_group = threads / 32;
-      const int global_warp_id = (threadIdx.x - thread_offset) / 32;
-      const int group_id = (threadIdx.x - thread_offset) / threads;
-      const int warp_id_in_group = global_warp_id % num_warps_per_group;
-      const int lane_id = threadIdx.x % 32;
-
-      __syncthreads();
-      if (lane_id == 0) {
-        red_buf[global_warp_id] = x;
-      }
-      __syncthreads();
-
-      if (warp_id_in_group == 0) {
-        const int group_base_warp = group_id * num_warps_per_group;
-        T val = (lane_id < num_warps_per_group)
-                    ? red_buf[group_base_warp + lane_id]
-                    : x;
-        // Final reduction within the first warp of the group
-        for (int offset = 16; offset > 0; offset >>= 1) {
-          T y = tl::shfl_xor_sync(uint32_t(-1), val, offset);
-          if ((lane_id ^ offset) < num_warps_per_group) {
-            if (lane_id < num_warps_per_group) {
-              val = Reducer()(val, y);
-            } else {
-              val = y;
-            }
-          }
-        }
-        if (lane_id == 0)
-          red_buf[group_base_warp] = val;
-      }
-      __syncthreads();
-      return red_buf[group_id * num_warps_per_group];
+      return hierarchical_reduce(x, red_buf);
     } else if constexpr (threads == 32 && scale == 1) {
       return warp_reduce<T>(x, Reducer());
     } else {
-      constexpr int offset = threads / 2;
-      if constexpr (offset >= 32) {
-        __syncthreads();
-        red_buf[threadIdx.x - thread_offset] = x;
-        __syncthreads();
-        x = Reducer()(x, red_buf[(threadIdx.x - thread_offset) ^ offset]);
-      } else {
-        x = Reducer()(x, tl::shfl_xor_sync(uint32_t(-1), x, offset));
-      }
-      if constexpr (offset == scale) {
-        return x;
-      } else {
-        return AllReduce<Reducer, offset, scale, thread_offset,
-                         all_threads>::run(x, red_buf);
-      }
+      return butterfly_reduce(x, red_buf);
     }
   }
 
+private:
   template <typename T>
-  static TL_DEVICE T run_hopper(T x, T *red_buf = nullptr) {
-    if constexpr (threads == scale) {
-      return x;
-    } else if constexpr (threads > 32 && (threads % 32 == 0) && scale == 1) {
-      x = warp_reduce<T>(x, Reducer());
+  static TL_DEVICE T hierarchical_reduce(T x, T *red_buf) {
+    x = warp_reduce<T>(x, Reducer());
 
-      const int num_warps_per_group = threads / 32;
-      const int global_warp_id = (threadIdx.x - thread_offset) / 32;
-      const int group_id = (threadIdx.x - thread_offset) / threads;
-      const int warp_id_in_group = global_warp_id % num_warps_per_group;
-      const int lane_id = threadIdx.x % 32;
+    constexpr int num_warps_per_group = threads / 32;
+    const int global_warp_id = (threadIdx.x - thread_offset) / 32;
+    const int group_id = (threadIdx.x - thread_offset) / threads;
+    const int warp_id_in_group = global_warp_id % num_warps_per_group;
+    const int lane_id = threadIdx.x % 32;
 
-      asm volatile("bar.sync %0, %1;" : : "r"(1), "r"(all_threads));
-      if (lane_id == 0) {
-        red_buf[global_warp_id] = x;
-      }
-      asm volatile("bar.sync %0, %1;" : : "r"(2), "r"(all_threads));
+    Barrier::template sync<1>();
+    if (lane_id == 0) {
+      red_buf[global_warp_id] = x;
+    }
+    Barrier::template sync<2>();
 
-      if (warp_id_in_group == 0) {
-        const int group_base_warp = group_id * num_warps_per_group;
-        T val = (lane_id < num_warps_per_group)
-                    ? red_buf[group_base_warp + lane_id]
-                    : x;
-        for (int offset = 16; offset > 0; offset >>= 1) {
-          T y = tl::shfl_xor_sync(uint32_t(-1), val, offset);
-          if ((lane_id ^ offset) < num_warps_per_group) {
-            if (lane_id < num_warps_per_group) {
-              val = Reducer()(val, y);
-            } else {
-              val = y;
-            }
-          }
-        }
-        if (lane_id == 0)
-          red_buf[group_base_warp] = val;
-      }
-      asm volatile("bar.sync %0, %1;" : : "r"(3), "r"(all_threads));
-      return red_buf[group_id * num_warps_per_group];
-    } else if constexpr (threads == 32 && scale == 1) {
-      return warp_reduce<T>(x, Reducer());
+    if (warp_id_in_group == 0) {
+      const int group_base_warp = group_id * num_warps_per_group;
+      warp_inter_reduce<Reducer, num_warps_per_group>(red_buf, group_base_warp,
+                                                      lane_id);
+    }
+    Barrier::template sync<3>();
+    return red_buf[group_id * num_warps_per_group];
+  }
+
+  template <typename T> static TL_DEVICE T butterfly_reduce(T x, T *red_buf) {
+    constexpr int offset = threads / 2;
+    if constexpr (offset >= 32) {
+      Barrier::template sync<1>();
+      red_buf[threadIdx.x - thread_offset] = x;
+      Barrier::template sync<2>();
+      x = Reducer()(x, red_buf[(threadIdx.x - thread_offset) ^ offset]);
     } else {
-      constexpr int offset = threads / 2;
-      if constexpr (offset >= 32) {
-        asm volatile("bar.sync %0, %1;" : : "r"(1), "r"(all_threads));
-        red_buf[threadIdx.x - thread_offset] = x;
-        // TODO(lei): maybe we can merge the two bar.sync into one?
-        asm volatile("bar.sync %0, %1;" : : "r"(2), "r"(all_threads));
-        x = Reducer()(x, red_buf[(threadIdx.x - thread_offset) ^ offset]);
-      } else {
-        x = Reducer()(x, tl::shfl_xor_sync(uint32_t(-1), x, offset));
-      }
-      if constexpr (offset == scale) {
-        return x;
-      } else {
-        return AllReduce<Reducer, offset, scale, thread_offset,
-                         all_threads>::run_hopper(x, red_buf);
-      }
+      x = Reducer()(x, tl::shfl_xor_sync(uint32_t(-1), x, offset));
+    }
+    if constexpr (offset == scale) {
+      return x;
+    } else {
+      return AllReduce<Reducer, offset, scale, thread_offset, Barrier>::run(
+          x, red_buf);
     }
   }
 };
