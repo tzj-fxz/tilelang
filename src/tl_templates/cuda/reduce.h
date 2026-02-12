@@ -341,6 +341,8 @@ TL_DEVICE T warp_reduce(T value, ReduceOp op) {
     value_cast = __half2float(value);
   } else if constexpr (std::is_same_v<T, bfloat16_t>) {
     value_cast = __bfloat162float(value);
+  } else {
+    value_cast = static_cast<float>(value);
   }
   if constexpr (std::is_same_v<ReduceOp, MaxOp> && !std::is_integral_v<T>) {
     float res;
