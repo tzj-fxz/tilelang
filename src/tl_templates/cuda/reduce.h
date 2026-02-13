@@ -128,8 +128,6 @@ struct AllReduce {
     if constexpr (threads == scale) {
       // Recursion base case: each reduce group has exactly one thread left.
       return x;
-    } else if constexpr (threads > 32 && (threads % 32 == 0) && scale == 1) {
-      return hierarchical_reduce(x, red_buf);
     } else if constexpr (threads == 32 && scale == 1) {
       return warp_reduce<T>(x, Reducer());
     } else {
@@ -138,31 +136,6 @@ struct AllReduce {
   }
 
 private:
-  template <typename T>
-  static TL_DEVICE T hierarchical_reduce(T x, T *red_buf) {
-    x = warp_reduce<T>(x, Reducer());
-
-    constexpr int num_warps_per_group = threads / 32;
-    const int global_warp_id = (threadIdx.x - thread_offset) / 32;
-    const int group_id = (threadIdx.x - thread_offset) / threads;
-    const int warp_id_in_group = global_warp_id % num_warps_per_group;
-    const int lane_id = threadIdx.x % 32;
-
-    Barrier::template sync<1>();
-    if (lane_id == 0) {
-      red_buf[global_warp_id] = x;
-    }
-    Barrier::template sync<2>();
-
-    if (warp_id_in_group == 0) {
-      const int group_base_warp = group_id * num_warps_per_group;
-      warp_inter_reduce<Reducer, num_warps_per_group>(red_buf, group_base_warp,
-                                                      lane_id);
-    }
-    Barrier::template sync<3>();
-    return red_buf[group_id * num_warps_per_group];
-  }
-
   template <typename T> static TL_DEVICE T butterfly_reduce(T x, T *red_buf) {
     constexpr int offset = threads / 2;
     if constexpr (offset >= 32) {
