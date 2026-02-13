@@ -77,28 +77,6 @@ template <int all_threads> struct NamedBarrier {
   }
 };
 
-// Performs the cross-warp reduction within the first warp of each group.
-// After all warps have written their partial results into red_buf, this
-// function loads them, reduces via warp shuffles, and writes the final
-// result back.
-template <class Reducer, int num_warps, typename T>
-TL_DEVICE void warp_inter_reduce(T *red_buf, int group_base, int lane_id) {
-  T val = (lane_id < num_warps) ? red_buf[group_base + lane_id]
-                                : red_buf[group_base];
-  for (int offset = 16; offset > 0; offset >>= 1) {
-    T y = tl::shfl_xor_sync(uint32_t(-1), val, offset);
-    if ((lane_id ^ offset) < num_warps) {
-      if (lane_id < num_warps) {
-        val = Reducer()(val, y);
-      } else {
-        val = y;
-      }
-    }
-  }
-  if (lane_id == 0)
-    red_buf[group_base] = val;
-}
-
 // AllReduce performs a cross-thread reduction over a group of `threads`
 // threads.
 //
@@ -111,12 +89,11 @@ TL_DEVICE void warp_inter_reduce(T *red_buf, int group_base, int lane_id) {
 //                     threadIdx = source * scale + ...
 //                   `scale` is the stride between consecutive logical
 //                   participants in the reduce dimension.
-//                   * scale == 1: threads are contiguous (0,1,2,...), enabling
-//                     the optimized hierarchical warp-reduce path.
-//                   * scale  > 1: threads are interleaved (0, scale, 2*scale,
-//                     ...), falling back to the recursive XOR-butterfly path.
 //                   The recursion terminates when threads == scale, meaning
 //                   each reduce group has been collapsed to a single thread.
+//                   Uses a recursive XOR-butterfly pattern: at each level,
+//                   offset >= 32 goes through shared memory + barrier,
+//                   offset < 32 uses warp shuffle (shfl_xor_sync).
 //   thread_offset - base thread index offset within the block.
 //   Barrier       - barrier policy type (SyncThreadsBarrier or
 //                   NamedBarrier<N>).
@@ -128,8 +105,6 @@ struct AllReduce {
     if constexpr (threads == scale) {
       // Recursion base case: each reduce group has exactly one thread left.
       return x;
-    } else if constexpr (threads == 32 && scale == 1) {
-      return warp_reduce<T>(x, Reducer());
     } else {
       return butterfly_reduce(x, red_buf);
     }

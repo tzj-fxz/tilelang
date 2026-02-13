@@ -356,11 +356,9 @@ Stmt ReduceOpNode::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
         // space.  When the thread-to-data mapping for the reduce dimension is
         // normalized as  threadIdx = source * scale + ...,
         //   * scale == 1  means threads are contiguous (0, 1, 2, ...),
-        //     which enables the optimized hierarchical warp-reduce path
-        //     (workspace = reducing_threads / 32).
         //   * scale  > 1  means threads are interleaved (0, scale, 2*scale,
-        //     ...), requiring the general recursive XOR-butterfly reduce
-        //     (workspace = total thread count).
+        //     ...).
+        // Both cases use the recursive XOR-butterfly reduce.
         // `extent` is the number of distinct thread positions along the reduce
         // dimension, so reducing_threads = extent * scale covers the full
         // thread index range that participates in the reduction.
@@ -386,23 +384,11 @@ Stmt ReduceOpNode::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
         }
         Array<PrimExpr> thread_reduce_args = {
             StringImm(ss.str()), BufferLoad(clear_buffer, red_indices)};
-        // The hierarchical path (contiguous threads, warp-aligned) only
-        // needs one shared-memory slot per warp; the butterfly path needs
-        // one slot per thread in the block.
-        bool is_hierarchical = [&]() {
-          if (reducing_threads <= 32)
-            return false;
-          if (reducing_threads % 32 != 0)
-            return false;
-          if (*scale != 1)
-            return false;
-          return true;
-        }();
+        // The butterfly reduce path needs one shared-memory slot per
+        // thread in the block.
         if (reducing_threads > 32) {
           int workspace_size =
-              is_hierarchical
-                  ? reducing_threads / 32
-                  : static_cast<int>(*as_const_int(T.thread_bounds->extent));
+              static_cast<int>(*as_const_int(T.thread_bounds->extent));
           PrimExpr workspace =
               T.AddWorkspace(workspace_size, clear_buffer->dtype);
           thread_reduce_args.push_back(workspace);
