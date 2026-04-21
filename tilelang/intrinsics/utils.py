@@ -24,7 +24,7 @@ def get_ldmatrix_offset(
     row_idx,
     col_idx,
     stride,
-    dtype: Literal["float16", "int8"] = "float16",
+    dtype: Literal["float16", "int8", "int4"] = "float16",
     transposed: bool = False,
 ):
     assert matrix in ["A", "B"], "matrix should be either A or B"
@@ -49,15 +49,17 @@ def get_ldmatrix_offset(
         else:
             new_row_idx, new_col_idx = transform_func(row_idx, col_idx)
             return new_row_idx, new_col_idx
-    elif dtype_bits == 8:
+    elif dtype_bits <= 8:
         if matrix == "B" and transposed:
             transform_func = ldmatrix_32x16_to_shared_16x32_layout_b
             new_row_idx, new_col_idx = transform_func(row_idx, col_idx)
-            return new_row_idx, new_col_idx
+            pack_factor = 8 // dtype_bits
+            return new_row_idx, new_col_idx * pack_factor
         elif matrix == "A" and not transposed:
             transform_func = ldmatrix_32x16_to_shared_16x32_layout_a
             new_row_idx, new_col_idx = transform_func(row_idx, col_idx)
-            return new_row_idx, new_col_idx
+            pack_factor = 8 // dtype_bits
+            return new_row_idx, new_col_idx * pack_factor
         else:
             raise ValueError("ldmatrix only supports B transposed and A non-transposed for int8")
     else:
